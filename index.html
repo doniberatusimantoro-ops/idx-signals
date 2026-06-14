@@ -494,89 +494,94 @@ function checkPendingOutcomes() {
 // ═══════════════════════════════════════════════════════
 // GROQ COMPOUND — BUILT-IN WEB SEARCH
 // ═══════════════════════════════════════════════════════
-async function callGroqCompound(prompt, apiKey, onSearchUpdate) {
-  // First call: compound-beta model with web search enabled
-  const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`
-    },
-    body: JSON.stringify({
-      model: 'compound-beta',
-      messages: [{ role: 'user', content: prompt }],
-      temperature: 0.2,
-      max_tokens: 4000
-    })
-  });
+// ═══════════════════════════════════════════════════════
+// GROQ API CALL — with retry on rate limit
+// ═══════════════════════════════════════════════════════
+async function callGroq(messages, apiKey, {
+  model = 'compound-beta',
+  maxTokens = 1200,
+  temperature = 0.2,
+  retries = 3,
+  onLog = null
+} = {}) {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+        body: JSON.stringify({ model, messages, temperature, max_tokens: maxTokens })
+      });
 
-  if (!res.ok) {
-    const err = await res.json();
-    // Fallback to llama-3.3-70b if compound-beta not available
-    if (res.status === 404 || res.status === 400) {
-      return callGroqFallback(prompt, apiKey);
-    }
-    throw new Error(err.error?.message || `HTTP ${res.status}`);
-  }
-
-  const data = await res.json();
-
-  // Extract search queries used (compound-beta returns tool calls info)
-  const searches = [];
-  if (data.choices?.[0]?.message?.tool_calls) {
-    data.choices[0].message.tool_calls.forEach(tc => {
-      if (tc.function?.name === 'web_search') {
-        try {
-          const args = JSON.parse(tc.function.arguments);
-          searches.push(args.query || args.q || 'web search');
-        } catch(e) {}
+      // Rate limited — wait and retry
+      if (res.status === 429) {
+        const err = await res.json();
+        // Extract retry-after seconds from error message if available
+        const wait = (() => {
+          const msg = err.error?.message || '';
+          const match = msg.match(/try again in ([\d.]+)s/i);
+          return match ? Math.ceil(parseFloat(match[1])) + 1 : 15 * attempt;
+        })();
+        if (onLog) onLog(`⏳ Rate limit — menunggu ${wait} detik (percobaan ${attempt}/${retries})...`);
+        await new Promise(r => setTimeout(r, wait * 1000));
+        continue;
       }
-    });
+
+      // Model not found — fallback to llama
+      if (res.status === 404 || res.status === 400) {
+        if (model === 'compound-beta') {
+          if (onLog) onLog('ℹ️ compound-beta tidak tersedia, beralih ke llama-3.3-70b...');
+          return callGroq(messages, apiKey, { model: 'llama-3.3-70b-versatile', maxTokens, temperature, retries, onLog });
+        }
+        const err = await res.json();
+        throw new Error(err.error?.message || `HTTP ${res.status}`);
+      }
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error?.message || `HTTP ${res.status}`);
+      }
+
+      const data = await res.json();
+      return data.choices?.[0]?.message?.content || '';
+
+    } catch(e) {
+      if (attempt === retries) throw e;
+      if (onLog) onLog(`⚠️ Error, mencoba ulang... (${attempt}/${retries})`);
+      await new Promise(r => setTimeout(r, 3000 * attempt));
+    }
   }
-
-  // Also check for search queries in content if model reports them
-  const content = data.choices?.[0]?.message?.content || '';
-
-  if (searches.length > 0 && onSearchUpdate) {
-    onSearchUpdate(searches);
-  }
-
-  return content;
-}
-
-async function callGroqFallback(prompt, apiKey) {
-  // Fallback: llama-3.3-70b without web search (uses training knowledge)
-  const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`
-    },
-    body: JSON.stringify({
-      model: 'llama-3.3-70b-versatile',
-      messages: [{ role: 'user', content: prompt }],
-      temperature: 0.2,
-      max_tokens: 4000
-    })
-  });
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.error?.message || `HTTP ${res.status}`);
-  }
-  const data = await res.json();
-  return data.choices?.[0]?.message?.content || '';
+  throw new Error('Semua percobaan gagal.');
 }
 
 // ═══════════════════════════════════════════════════════
-// MAIN ANALYSIS
+// MAIN ANALYSIS — 2-PHASE SYSTEM
 // ═══════════════════════════════════════════════════════
 const IDX_WATCHLIST = [
   'BBCA','BBRI','BMRI','BNGA','BBNI',
-  'TLKM','GOTO','EXCL','EMTK',
-  'ASII','UNVR','ICBP','INDF','MYOR',
-  'ADRO','PTBA','INCO','ANTM','TINS',
-  'KLBF','SMGR','CTRA','BSDE','JSMR'
+  'TLKM','GOTO','EXCL',
+  'ASII','UNVR','ICBP','INDF',
+  'ADRO','PTBA','INCO','ANTM',
+  'KLBF','SMGR','CTRA','JSMR'
 ];
+
+// ─── helper: update loading UI ───────────────────────
+function setLoading(label, sub, pct) {
+  const ll = document.getElementById('loading-label');
+  const ls = document.getElementById('loading-steps');
+  const pb = document.getElementById('progress-bar');
+  if (ll) ll.textContent = label;
+  if (ls) ls.innerHTML = sub;
+  if (pb) pb.style.width = pct + '%';
+}
+function addLog(msg, color) {
+  const logItems = document.getElementById('search-log-items');
+  if (!logItems) return;
+  logItems.innerHTML += `<div class="search-item">
+    <div class="search-dot" style="${color ? 'background:' + color : ''}"></div>
+    <span style="${color ? 'color:' + color : ''}">${msg}</span>
+  </div>`;
+  logItems.scrollTop = logItems.scrollHeight;
+}
 
 async function runAnalysis() {
   const apiKey = state.settings.apiKey;
@@ -593,194 +598,154 @@ async function runAnalysis() {
   const logItems = document.getElementById('search-log-items');
 
   btn.disabled = true;
-  btn.innerHTML = '<span class="spinner"></span>Mencari...';
+  btn.innerHTML = '<span class="spinner"></span>Analisis...';
   logEl.classList.add('visible');
   logItems.innerHTML = '';
 
-  listEl.innerHTML = `
-    <div class="loading-card">
-      <div class="spinner lg"></div>
-      <div class="loading-label">AI sedang mencari data live...</div>
-      <div class="loading-steps" id="loading-steps">
-        Menghubungi Groq Compound...<br>
-        AI akan search harga saham, berita, dan analisis dari internet
-      </div>
-      <div class="progress-bar-track"><div class="progress-bar-fill" id="progress-bar"></div></div>
-    </div>`;
+  listEl.innerHTML = `<div class="loading-card">
+    <div class="spinner lg"></div>
+    <div class="loading-label" id="loading-label">Fase 1 — Filter kandidat...</div>
+    <div class="loading-steps" id="loading-steps">AI memilih saham terbaik dari watchlist</div>
+    <div class="progress-bar-track"><div class="progress-bar-fill" id="progress-bar" style="width:0%"></div></div>
+  </div>`;
 
-  // Animate progress bar
-  let progress = 0;
-  const progressInterval = setInterval(() => {
-    progress = Math.min(progress + Math.random()*8, 85);
-    const bar = document.getElementById('progress-bar');
-    if (bar) bar.style.width = progress + '%';
-  }, 800);
+  const today = new Date().toLocaleDateString('id-ID', {weekday:'long',year:'numeric',month:'long',day:'numeric',timeZone:'Asia/Jakarta'});
+  const holdingTickers = state.holdings.map(h => h.ticker);
+  const perfCtx = buildPerfContext();
 
-  // Fetch USD/IDR in parallel (simple, doesn't need search)
+  // Fetch USD/IDR in parallel — very small call, no rate limit issue
   statusEl.textContent = 'Mengambil kurs USD/IDR...';
   const usdIdr = await fetchUsdIdr();
   if (usdIdr) document.getElementById('usd-idr').textContent = usdIdr.toLocaleString('id-ID');
 
-  // Build search-aware prompt
-  const holdingsList = state.holdings.length > 0
-    ? state.holdings.map(h => `${h.ticker} (${h.lots} lot @ avg Rp ${h.avgPrice.toLocaleString('id-ID')})`).join(', ')
-    : 'tidak ada';
-  const today = new Date().toLocaleDateString('id-ID', {weekday:'long',year:'numeric',month:'long',day:'numeric',timeZone:'Asia/Jakarta'});
-  const perfCtx = buildPerfContext();
-  const watchlistStr = IDX_WATCHLIST.join(', ');
-
-  statusEl.textContent = 'AI mencari data harga & berita IDX...';
-
-  // Add search log updates
-  const searchQueries = [];
-  function onSearch(queries) {
-    queries.forEach(q => {
-      if (!searchQueries.includes(q)) {
-        searchQueries.push(q);
-        logItems.innerHTML += `<div class="search-item"><div class="search-dot"></div><span>${q}</span></div>`;
-      }
-    });
-  }
-
-  // Simulate search log for UX while waiting
-  const simulatedSearches = [
-    `harga saham IDX hari ini ${new Date().toLocaleDateString('id-ID')}`,
-    `IHSG index IDX Indonesia terkini`,
-    `berita saham Indonesia terbaru`,
-    `saham blue chip IDX rekomendasi ${new Date().toLocaleDateString('id-ID')}`
-  ];
-  let simIdx = 0;
-  const simInterval = setInterval(() => {
-    if (simIdx < simulatedSearches.length) {
-      logItems.innerHTML += `<div class="search-item"><div class="search-dot"></div><span>${simulatedSearches[simIdx]}</span></div>`;
-      simIdx++;
-    }
-  }, 2000);
-
-  const prompt = `Anda adalah analis saham IDX Indonesia profesional. Hari ini: ${today}.
-
-PENTING: Gunakan kemampuan web search Anda untuk mencari data TERKINI sebelum menjawab:
-1. Search "harga saham IDX hari ini" atau "IDX stock prices today" untuk harga live
-2. Search berita terkait masing-masing saham yang akan Anda rekomendasikan
-3. Search "IHSG hari ini" untuk kondisi indeks
-4. Search data fundamental dan teknikal saham pilihan Anda
-
-DATA KONTEKS:
-- USD/IDR saat ini: ${usdIdr ? usdIdr.toLocaleString('id-ID') : 'cari via search'}
-- BI Rate: 6.25%
-- Portofolio pengguna: ${holdingsList}
-- Ukuran portofolio: Rp ${state.settings.portfolioSize} juta
-- Watchlist untuk discan: ${watchlistStr}
-
-TRACK RECORD AI SEBELUMNYA:
-${perfCtx}
-
-TUGAS:
-Setelah search data terkini, berikan MAKSIMAL 5 rekomendasi saham IDX terbaik hari ini. Rules:
-- Hanya saham dengan confidence MEDIUM atau HIGH
-- Urut dari conviction tertinggi ke terendah
-- AI memilih horizon short-term (1-7 hari) dan/atau medium-term (7-30 hari) per saham berdasarkan karakter masing-masing
-- Jika pasar tidak kondusif atau data tidak cukup, kurangi atau kosongkan list
-- Bobot sinyal berdasarkan track record: sinyal dengan akurasi tinggi diberi bobot lebih besar
-- Tandai isInPortfolio: true jika ticker ada di portofolio pengguna
-
-Respond HANYA dengan JSON valid tanpa markdown backtick:
-{
-  "marketCondition": "bullish|neutral|bearish",
-  "marketComment": "komentar kondisi pasar hari ini dalam Bahasa Indonesia, max 1 kalimat",
-  "ihsg": 7250,
-  "ihsgChange": 0.45,
-  "dataSource": "keterangan singkat dari mana data diambil",
-  "recommendations": [
-    {
-      "ticker": "BBCA",
-      "companyName": "Bank Central Asia Tbk",
-      "signal": "buy",
-      "currentPrice": 9450,
-      "priceChange": 1.34,
-      "confidence": "high",
-      "styleTag": "Value",
-      "signals": ["RSI","ForeignFlow","Fundamental"],
-      "searchedData": ["harga BBCA terkini", "berita BBCA"],
-      "shortTerm": {
-        "tp": 9800,
-        "sl": 9150,
-        "targetDays": 5,
-        "rr": "1:3.6"
-      },
-      "mediumTerm": {
-        "tp": 10400,
-        "sl": 8900,
-        "targetDays": 22,
-        "rr": "1:2.8"
-      },
-      "reasoning": "penjelasan 2-3 kalimat Bahasa Indonesia berdasarkan data yang ditemukan via search",
-      "alert": "peringatan khusus jika ada (earnings, dividen, event korporat) atau null",
-      "isInPortfolio": false
-    }
-  ],
-  "selfNote": "evaluasi diri AI max 2 kalimat Bahasa Indonesia — apa yang dipelajari dari track record, sinyal mana yang paling reliable",
-  "quietMarket": false,
-  "quietReason": null
-}`;
+  const onLog = (msg) => { addLog(msg); statusEl.textContent = msg; };
 
   try {
-    const raw = await callGroqCompound(prompt, apiKey, onSearch);
-    clearInterval(progressInterval);
-    clearInterval(simInterval);
 
-    const bar = document.getElementById('progress-bar');
-    if (bar) bar.style.width = '100%';
+    // ════════════════════════════════════════════════
+    // FASE 1 — FILTER CEPAT (~400 token input)
+    // Pilih 5 kandidat terkuat tanpa web search
+    // Model: llama-3.3-70b (paling efisien untuk filter)
+    // ════════════════════════════════════════════════
+    setLoading('Fase 1 — Filter kandidat...', 'AI memilih saham terbaik dari watchlist', 10);
+    addLog('🔎 Fase 1: memilih kandidat dari watchlist...');
 
-    // Parse JSON from response
-    const jsonMatch = raw.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) throw new Error('AI tidak mengembalikan JSON yang valid. Coba lagi.');
-    const result = JSON.parse(jsonMatch[0]);
+    const watchlist = [...new Set([...holdingTickers, ...IDX_WATCHLIST])].slice(0, 20);
+    const perfSigs = Object.entries(getWeightedPerf().signalAccuracy)
+      .sort((a,b)=>b[1]-a[1]).slice(0,3).map(([k,v])=>`${k}(${v}%)`).join(',') || 'RSI,MACD,ForeignFlow';
+
+    const phase1Prompt = `Analis IDX Indonesia. Hari: ${today}. USD/IDR: ${usdIdr||'~16000'}. BI Rate: 6.25%.
+Portofolio user: ${holdingTickers.join(',') || 'kosong'}.
+Watchlist: ${watchlist.join(',')}.
+Sinyal terbaik historis: ${perfSigs}.
+
+Pilih TEPAT 5 saham dari watchlist yang paling layak dianalisis lebih dalam hari ini.
+Pertimbangkan: sektor yang sedang trending, momentum pasar, diversifikasi sektor, sinyal terbaik historis.
+Sertakan saham dari portofolio user jika relevan.
+
+Respond JSON saja tanpa markdown:
+{"candidates":["BBCA","BBRI","TLKM","ADRO","UNVR"],"marketSentiment":"bullish|neutral|bearish","ihsgEst":7250,"reason":"1 kalimat alasan pemilihan"}`;
+
+    const phase1Raw = await callGroq(
+      [{ role: 'user', content: phase1Prompt }],
+      apiKey,
+      { model: 'llama-3.3-70b-versatile', maxTokens: 150, temperature: 0.1, retries: 3, onLog }
+    );
+
+    const p1Match = phase1Raw.match(/\{[\s\S]*?\}/);
+    if (!p1Match) throw new Error('Fase 1 gagal menghasilkan JSON. Coba lagi.');
+    const phase1 = JSON.parse(p1Match[0]);
+    const candidates = (phase1.candidates || []).slice(0, 5);
+    if (!candidates.length) throw new Error('Tidak ada kandidat saham yang dipilih.');
+
+    addLog(`✅ Kandidat terpilih: ${candidates.join(', ')}`, 'var(--green)');
+    setLoading('Fase 2 — Search data live...', `Mencari data untuk: ${candidates.join(', ')}`, 35);
+
+    // Jeda singkat antar fase untuk hindari rate limit
+    await new Promise(r => setTimeout(r, 2000));
+
+    // ════════════════════════════════════════════════
+    // FASE 2 — ANALISIS DALAM dengan web search
+    // Hanya untuk 5 kandidat terpilih (~800 token input)
+    // Model: compound-beta (web search built-in)
+    // ════════════════════════════════════════════════
+    candidates.forEach(c => addLog(`🔍 Search: harga & berita ${c} terkini`));
+    setLoading('Fase 2 — AI mencari data live...', `Web search untuk ${candidates.length} saham`, 50);
+
+    const holdingsCtx = state.holdings.length > 0
+      ? state.holdings.filter(h => candidates.includes(h.ticker))
+          .map(h => `${h.ticker}:${h.lots}lot@${h.avgPrice}`).join(',')
+      : '';
+
+    const phase2Prompt = `Analis saham IDX Indonesia. ${today}. USD/IDR:${usdIdr||'cari'}.
+
+WAJIB search data terkini untuk saham berikut: ${candidates.join(', ')}.
+Search minimal: harga sekarang, perubahan hari ini, berita terbaru, kondisi IHSG.
+
+Portofolio user: ${holdingsCtx||'kosong'}. Portfolio size: Rp ${state.settings.portfolioSize}jt.
+Track record: ${perfCtx}.
+Sentimen awal: ${phase1.marketSentiment||'neutral'}.
+
+Setelah search, beri rekomendasi untuk TIAP saham (max 5, min confidence MEDIUM).
+Urut conviction tertinggi. Jika pasar buruk, boleh <5 atau kosong.
+
+JSON tanpa markdown:
+{"marketCondition":"bullish|neutral|bearish","marketComment":"1 kalimat","ihsg":7250,"ihsgChange":0.5,"recommendations":[{"ticker":"BBCA","companyName":"Bank Central Asia Tbk","signal":"buy","currentPrice":9450,"priceChange":1.2,"confidence":"high","styleTag":"Value","signals":["RSI","ForeignFlow"],"shortTerm":{"tp":9800,"sl":9150,"targetDays":5,"rr":"1:3.6"},"mediumTerm":{"tp":10400,"sl":8900,"targetDays":22,"rr":"1:2.8"},"reasoning":"2 kalimat BI","alert":null,"isInPortfolio":false}],"selfNote":"1-2 kalimat evaluasi","quietMarket":false,"quietReason":null}`;
+
+    setLoading('Fase 2 — AI menganalisis...', 'Membaca data live dan menyusun rekomendasi', 70);
+
+    const phase2Raw = await callGroq(
+      [{ role: 'user', content: phase2Prompt }],
+      apiKey,
+      { model: 'compound-beta', maxTokens: 1500, temperature: 0.2, retries: 4, onLog }
+    );
+
+    const p2Match = phase2Raw.match(/\{[\s\S]*\}/);
+    if (!p2Match) throw new Error('Fase 2 tidak menghasilkan JSON valid. Coba lagi.');
+    const result = JSON.parse(p2Match[0]);
+
+    // Mark holdings
+    if (result.recommendations) {
+      result.recommendations = result.recommendations.map(r => ({
+        ...r,
+        isInPortfolio: holdingTickers.includes(r.ticker)
+      }));
+    }
+
+    setLoading('Selesai!', 'Rekomendasi siap', 100);
+    candidates.forEach(c => {
+      const found = result.recommendations?.find(r => r.ticker === c);
+      addLog(
+        found ? `✅ ${c} → ${found.signal.toUpperCase()} (${found.confidence})` : `➖ ${c} → tidak memenuhi threshold`,
+        found ? 'var(--green)' : 'var(--text3)'
+      );
+    });
 
     // Update IHSG
     if (result.ihsg) {
       document.getElementById('ihsg-val').textContent = `IHSG ${result.ihsg.toLocaleString('id-ID')}`;
+      const chgEl = document.getElementById('ihsg-chg');
       if (result.ihsgChange !== undefined) {
-        const chgEl = document.getElementById('ihsg-chg');
         chgEl.textContent = (result.ihsgChange >= 0 ? '+' : '') + result.ihsgChange.toFixed(2) + '%';
         chgEl.className = result.ihsgChange >= 0 ? 'pos' : 'neg';
       }
     }
 
-    // Update status
-    const src = result.dataSource ? ` · ${result.dataSource}` : '';
     statusEl.textContent = result.quietMarket
       ? `⚠️ ${result.quietReason}`
-      : `✅ ${result.recommendations?.length || 0} rekomendasi · ${result.marketComment}${src}`;
+      : `✅ ${result.recommendations?.length || 0} rekomendasi · ${result.marketComment}`;
 
-    // Log actual search queries from result
-    if (result.recommendations) {
-      result.recommendations.forEach(r => {
-        (r.searchedData || []).forEach(q => {
-          if (!searchQueries.includes(q)) {
-            searchQueries.push(q);
-            logItems.innerHTML += `<div class="search-item"><div class="search-dot" style="background:var(--green)"></div><span style="color:var(--green)">${q} ✓</span></div>`;
-          }
-        });
-      });
-    }
-
-    // Store & render
     processResult(result);
-
-    // Hide search log after 3s
-    setTimeout(() => { logEl.classList.remove('visible'); }, 3000);
+    setTimeout(() => { logEl.classList.remove('visible'); }, 5000);
 
   } catch(err) {
-    clearInterval(progressInterval);
-    clearInterval(simInterval);
     logEl.classList.remove('visible');
     listEl.innerHTML = `<div class="empty-state">
       <div class="empty-icon">⚠️</div>
       <div class="empty-title">Analisis Gagal</div>
-      <div class="empty-body" style="text-align:left;background:var(--surface);border-radius:var(--r-sm);padding:12px;font-family:var(--font-mono);font-size:11px;margin-top:8px">${err.message}</div>
+      <div class="empty-body" style="text-align:left;background:var(--surface);border-radius:var(--r-sm);padding:12px;font-family:var(--font-mono);font-size:11px;margin-top:8px;line-height:1.7">${err.message}<br><br>Tips: tunggu 1 menit lalu coba lagi jika kena rate limit.</div>
     </div>`;
-    statusEl.textContent = 'Gagal. Cek API key dan coba lagi.';
+    statusEl.textContent = '❌ Gagal. Tunggu sebentar lalu coba lagi.';
   }
 
   btn.disabled = false;

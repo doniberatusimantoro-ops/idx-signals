@@ -693,67 +693,131 @@ Respond JSON saja tanpa markdown:
     await new Promise(r => setTimeout(r, 2000));
 
     // ════════════════════════════════════════════════
-    // FASE 2 — ANALISIS DALAM dengan web search
-    // Hanya untuk 5 kandidat terpilih (~800 token input)
-    // Model: groq/compound (web search built-in)
+    // FASE 2 — Analisis per saham satu per satu
+    // Lebih kecil per request → hindari "entity too large"
     // ════════════════════════════════════════════════
-    candidates.forEach(c => addLog(`🔍 Akan search: harga & berita ${c} terkini`));
     setLoading(
-      'Fase 2 — AI mencari data live...',
-      `groq/compound sedang web search untuk: ${candidates.join(', ')}<br><span style="color:var(--text3);font-size:10px">Proses ini butuh 20-40 detik karena AI search internet secara real-time</span>`,
+      'Fase 2 — Menganalisis saham...',
+      `Menganalisis ${candidates.length} saham satu per satu`,
       50
     );
 
-    // Countdown timer untuk UX — supaya user tahu app tidak hang
     let elapsed = 0;
     const countdownInterval = setInterval(() => {
       elapsed += 5;
       const lbl = document.getElementById('loading-label');
-      if (lbl) lbl.textContent = `Fase 2 — Mencari data... (${elapsed}s)`;
+      if (lbl) lbl.textContent = `Fase 2 — Analisis... (${elapsed}s)`;
       const bar = document.getElementById('progress-bar');
-      if (bar) bar.style.width = Math.min(50 + elapsed, 88) + '%';
+      if (bar) bar.style.width = Math.min(50 + elapsed * 1.2, 88) + '%';
     }, 5000);
 
-    const holdingsCtx = state.holdings.length > 0
-      ? state.holdings.filter(h => candidates.includes(h.ticker))
-          .map(h => `${h.ticker}:${h.lots}lot@${h.avgPrice}`).join(',')
-      : '';
+    const today2 = new Date().toLocaleDateString('id-ID', {day:'numeric',month:'long',year:'numeric',timeZone:'Asia/Jakarta'});
+    const allRecs = [];
+    let marketCondition = phase1.marketSentiment || 'neutral';
+    let marketComment = '';
+    let ihsg = phase1.ihsgEst || null;
+    let ihsgChange = null;
+    let selfNote = '';
 
-    const phase2Prompt = `Analis saham IDX Indonesia. ${today}. USD/IDR:${usdIdr||'cari'}.
+    for (let i = 0; i < candidates.length; i++) {
+      const ticker = candidates[i];
+      const holding = state.holdings.find(h => h.ticker === ticker);
+      const holdingCtx = holding
+        ? `User punya ${holding.lots} lot @ avg Rp ${holding.avgPrice.toLocaleString('id-ID')}.`
+        : '';
 
-WAJIB search data terkini untuk saham berikut: ${candidates.join(', ')}.
-Search minimal: harga sekarang, perubahan hari ini, berita terbaru, kondisi IHSG.
+      setLoading(
+        `Fase 2 — ${ticker} (${i+1}/${candidates.length})`,
+        `Search harga & analisis ${ticker}...`,
+        50 + Math.round((i / candidates.length) * 38)
+      );
+      addLog(`🔍 Menganalisis ${ticker}...`);
 
-Portofolio user: ${holdingsCtx||'kosong'}. Portfolio size: Rp ${state.settings.portfolioSize}jt.
-Track record: ${perfCtx}.
-Sentimen awal: ${phase1.marketSentiment||'neutral'}.
+      const stockPrompt = `Analis IDX. ${today2}. BI Rate 6.25%. USD/IDR ${usdIdr || '~16000'}.
+${holdingCtx}
+Track record sinyal terbaik: ${perfCtx}.
 
-Setelah search, beri rekomendasi untuk TIAP saham (max 5, min confidence MEDIUM).
-Urut conviction tertinggi. Jika pasar buruk, boleh <5 atau kosong.
+Search harga terkini dan 1-2 berita terbaru untuk saham ${ticker} di IDX Indonesia.
+Lalu beri rekomendasi singkat.
 
-JSON tanpa markdown:
-{"marketCondition":"bullish|neutral|bearish","marketComment":"1 kalimat","ihsg":7250,"ihsgChange":0.5,"recommendations":[{"ticker":"BBCA","companyName":"Bank Central Asia Tbk","signal":"buy","currentPrice":9450,"priceChange":1.2,"confidence":"high","styleTag":"Value","signals":["RSI","ForeignFlow"],"shortTerm":{"tp":9800,"sl":9150,"targetDays":5,"rr":"1:3.6"},"mediumTerm":{"tp":10400,"sl":8900,"targetDays":22,"rr":"1:2.8"},"reasoning":"2 kalimat BI","alert":null,"isInPortfolio":false}],"selfNote":"1-2 kalimat evaluasi","quietMarket":false,"quietReason":null}`;
+Balas JSON saja (MAKSIMAL 300 token output):
+{"ticker":"${ticker}","companyName":"nama perusahaan","signal":"buy|hold|sell","currentPrice":0,"priceChange":0.0,"confidence":"high|medium|low","styleTag":"Value|Growth|Swing","signals":["RSI","ForeignFlow"],"shortTerm":{"tp":0,"sl":0,"targetDays":5,"rr":"1:2"},"mediumTerm":{"tp":0,"sl":0,"targetDays":20,"rr":"1:2"},"reasoning":"max 2 kalimat BI","alert":null,"isInPortfolio":${holding ? 'true' : 'false'}}`;
 
-    setLoading('Fase 2 — AI menganalisis...', 'Membaca data live dan menyusun rekomendasi', 70);
+      try {
+        const raw = await callGroq(
+          [{ role: 'user', content: stockPrompt }],
+          apiKey,
+          { model: MODELS.compound, maxTokens: 350, temperature: 0.2, retries: 3, timeoutMs: 45000, onLog }
+        );
 
-    const phase2Raw = await callGroq(
-      [{ role: 'user', content: phase2Prompt }],
-      apiKey,
-      { model: MODELS.compound, maxTokens: 1200, temperature: 0.2, retries: 4, timeoutMs: 60000, onLog }
-    );
+        const match = raw.match(/\{[\s\S]*?\}/);
+        if (!match) { addLog(`⚠️ ${ticker}: JSON tidak ditemukan, skip`, 'warn'); continue; }
 
-    const p2Match = phase2Raw.match(/\{[\s\S]*\}/);
-    clearInterval(countdownInterval);
-    if (!p2Match) throw new Error('Fase 2 tidak menghasilkan JSON valid. Coba lagi.');
-    const result = JSON.parse(p2Match[0]);
+        const rec = JSON.parse(match[0]);
 
-    // Mark holdings
-    if (result.recommendations) {
-      result.recommendations = result.recommendations.map(r => ({
-        ...r,
-        isInPortfolio: holdingTickers.includes(r.ticker)
-      }));
+        // Only include medium+ confidence
+        if (rec.confidence === 'low') {
+          addLog(`➖ ${ticker}: confidence rendah, dilewati`);
+          continue;
+        }
+
+        allRecs.push(rec);
+        addLog(`✅ ${ticker} → ${rec.signal?.toUpperCase()} (${rec.confidence}) @ Rp ${rec.currentPrice?.toLocaleString('id-ID')}`, 'var(--green)');
+
+        // Jeda antar saham supaya tidak kena rate limit
+        if (i < candidates.length - 1) await new Promise(r => setTimeout(r, 3000));
+
+      } catch(stockErr) {
+        addLog(`⚠️ ${ticker} gagal: ${stockErr.message}`);
+        if (i < candidates.length - 1) await new Promise(r => setTimeout(r, 5000));
+      }
     }
+
+    // Fase 3 — Ringkasan pasar (llama cepat, tanpa search)
+    if (allRecs.length > 0) {
+      addLog('📊 Menyusun ringkasan pasar...');
+      const summaryPrompt = `Berdasarkan rekomendasi ini untuk saham IDX hari ini ${today2}:
+${allRecs.map(r => `${r.ticker}: ${r.signal} @ ${r.currentPrice}`).join(', ')}
+IHSG estimasi: ${ihsg || 6200}.
+
+Balas JSON saja: {"marketCondition":"bullish|neutral|bearish","marketComment":"1 kalimat kondisi pasar BI","ihsg":6200,"ihsgChange":0.5,"selfNote":"1 kalimat evaluasi sinyal AI dari track record"}`;
+
+      try {
+        const sumRaw = await callGroq(
+          [{ role: 'user', content: summaryPrompt }],
+          apiKey,
+          { model: MODELS.filter, maxTokens: 120, temperature: 0.1, retries: 2, onLog }
+        );
+        const sumMatch = sumRaw.match(/\{[\s\S]*?\}/);
+        if (sumMatch) {
+          const sum = JSON.parse(sumMatch[0]);
+          marketCondition = sum.marketCondition || marketCondition;
+          marketComment = sum.marketComment || '';
+          ihsg = sum.ihsg || ihsg;
+          ihsgChange = sum.ihsgChange;
+          selfNote = sum.selfNote || '';
+        }
+      } catch(e) { /* non-critical */ }
+    }
+
+    clearInterval(countdownInterval);
+
+    // Sort by conviction (high > medium) then by abs priceChange
+    allRecs.sort((a,b) => {
+      const cv = {high:2, medium:1, low:0};
+      return (cv[b.confidence]||0) - (cv[a.confidence]||0);
+    });
+
+    const result = {
+      marketCondition,
+      marketComment: marketComment || `${allRecs.length} sinyal ditemukan dari ${candidates.length} kandidat`,
+      ihsg,
+      ihsgChange,
+      recommendations: allRecs.slice(0, 5),
+      selfNote,
+      quietMarket: allRecs.length === 0,
+      quietReason: allRecs.length === 0 ? 'Tidak ada saham yang memenuhi threshold confidence minimum hari ini.' : null
+    };
 
     setLoading('Selesai!', 'Rekomendasi siap', 100);
     candidates.forEach(c => {

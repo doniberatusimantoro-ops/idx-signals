@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IDX Signals — Debug</title>
+<style>
+  body { font-family: monospace; background: #0a0a0f; color: #f0f0f8; padding: 20px; font-size: 13px; }
+  h2 { color: #7B6EF6; margin-bottom: 16px; }
+  .row { margin-bottom: 10px; }
+  label { display: block; color: #9090A8; font-size: 11px; margin-bottom: 4px; }
+  input, select { background: #1e1e2e; border: 1px solid rgba(255,255,255,0.12); border-radius: 6px; padding: 8px 10px; color: #f0f0f8; font-family: monospace; font-size: 13px; width: 100%; max-width: 420px; }
+  button { background: #7B6EF6; color: #fff; border: none; border-radius: 6px; padding: 10px 20px; font-family: monospace; font-size: 13px; cursor: pointer; margin-right: 8px; margin-bottom: 8px; }
+  button.sec { background: #252538; }
+  .log { background: #12121a; border: 1px solid rgba(255,255,255,0.07); border-radius: 8px; padding: 14px; margin-top: 16px; min-height: 200px; max-height: 500px; overflow-y: auto; white-space: pre-wrap; line-height: 1.8; font-size: 12px; }
+  .ok { color: #2ECC8A; }
+  .err { color: #FF5A5A; }
+  .warn { color: #F5A623; }
+  .info { color: #4A9EFF; }
+  .dim { color: #5A5A72; }
+  hr { border: none; border-top: 1px solid rgba(255,255,255,0.07); margin: 16px 0; }
+</style>
+</head>
+<body>
+
+<h2>🔧 IDX Signals — Debug Console</h2>
+
+<div class="row">
+  <label>Groq API Key</label>
+  <input type="password" id="api-key" placeholder="gsk_...">
+</div>
+
+<div class="row">
+  <label>Test yang dijalankan</label>
+  <select id="test-select">
+    <option value="all">Semua test (rekomendasikan ini dulu)</option>
+    <option value="ping">1. Ping Groq API</option>
+    <option value="models">2. List model tersedia</option>
+    <option value="mini">3. Mini call — llama (10 token output)</option>
+    <option value="compound">4. Compound-beta test</option>
+    <option value="phase1">5. Fase 1 — Filter kandidat (full)</option>
+    <option value="phase2">6. Fase 2 — Analisis 2 saham saja</option>
+    <option value="limits">7. Cek rate limit headers</option>
+  </select>
+</div>
+
+<button onclick="runTest()">▶ Jalankan Test</button>
+<button class="sec" onclick="clearLog()">🗑 Clear</button>
+
+<div class="log" id="log">Pilih test dan masukkan API key, lalu tekan Jalankan...\n</div>
+
+<script>
+const log = document.getElementById('log');
+
+function write(msg, cls='') {
+  const ts = new Date().toLocaleTimeString('id-ID');
+  log.innerHTML += `<span class="${cls}">[${ts}] ${msg}\n</span>`;
+  log.scrollTop = log.scrollHeight;
+}
+function clearLog() { log.innerHTML = ''; }
+
+async function groqCall(apiKey, model, messages, maxTokens=50) {
+  const t0 = Date.now();
+  const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+    body: JSON.stringify({ model, messages, max_tokens: maxTokens, temperature: 0.1 })
+  });
+
+  const headers = {};
+  for (const [k,v] of res.headers.entries()) {
+    if (k.startsWith('x-ratelimit') || k.startsWith('x-groq')) headers[k] = v;
+  }
+
+  const data = await res.json();
+  const elapsed = Date.now() - t0;
+  return { status: res.status, data, headers, elapsed };
+}
+
+async function runTest() {
+  const apiKey = document.getElementById('api-key').value.trim();
+  const test = document.getElementById('test-select').value;
+
+  if (!apiKey) { write('❌ Masukkan API key dulu!', 'err'); return; }
+  if (!apiKey.startsWith('gsk_')) { write('⚠️ API key Groq harus dimulai dengan gsk_', 'warn'); }
+
+  write('═══════════════════════════════', 'dim');
+  write(`Menjalankan: ${test}`, 'info');
+
+  try {
+    if (test === 'all') {
+      await testPing(apiKey);
+      await sleep(1000);
+      await testModels(apiKey);
+      await sleep(1500);
+      await testMini(apiKey);
+      await sleep(2000);
+      await testCompound(apiKey);
+      await sleep(2000);
+      await testPhase1(apiKey);
+      write('═══ Semua test selesai ═══', 'ok');
+    }
+    else if (test === 'ping') await testPing(apiKey);
+    else if (test === 'models') await testModels(apiKey);
+    else if (test === 'mini') await testMini(apiKey);
+    else if (test === 'compound') await testCompound(apiKey);
+    else if (test === 'phase1') await testPhase1(apiKey);
+    else if (test === 'phase2') await testPhase2(apiKey);
+    else if (test === 'limits') await testLimits(apiKey);
+
+  } catch(e) {
+    write(`❌ Exception: ${e.message}`, 'err');
+    write(e.stack || '', 'dim');
+  }
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// ── TEST 1: Ping ─────────────────────────────────────
+async function testPing(apiKey) {
+  write('--- TEST 1: Ping Groq API ---', 'info');
+  try {
+    const res = await fetch('https://api.groq.com/openai/v1/models', {
+      headers: { 'Authorization': `Bearer ${apiKey}` }
+    });
+    if (res.ok) {
+      write(`✅ Groq API reachable (HTTP ${res.status})`, 'ok');
+    } else {
+      const d = await res.json();
+      write(`❌ HTTP ${res.status}: ${d.error?.message}`, 'err');
+    }
+  } catch(e) {
+    write(`❌ Network error: ${e.message}`, 'err');
+    write('→ Kemungkinan CORS issue atau network blocked', 'warn');
+  }
+}
+
+// ── TEST 2: List Models ───────────────────────────────
+async function testModels(apiKey) {
+  write('--- TEST 2: Model tersedia ---', 'info');
+  const res = await fetch('https://api.groq.com/openai/v1/models', {
+    headers: { 'Authorization': `Bearer ${apiKey}` }
+  });
+  const data = await res.json();
+  if (!res.ok) { write(`❌ ${data.error?.message}`, 'err'); return; }
+  const models = (data.data || []).map(m => m.id).sort();
+  const hasCompound = models.some(m => m.includes('compound'));
+  const hasLlama = models.some(m => m.includes('llama-3.3'));
+  write(`Total model: ${models.length}`, 'ok');
+  write(`compound-beta: ${hasCompound ? '✅ ADA' : '❌ TIDAK ADA'}`, hasCompound ? 'ok' : 'err');
+  write(`llama-3.3-70b: ${hasLlama ? '✅ ADA' : '❌ TIDAK ADA'}`, hasLlama ? 'ok' : 'err');
+  write('Semua model: ' + models.join(', '), 'dim');
+}
+
+// ── TEST 3: Mini llama call ───────────────────────────
+async function testMini(apiKey) {
+  write('--- TEST 3: Mini call llama-3.3-70b ---', 'info');
+  const { status, data, headers, elapsed } = await groqCall(
+    apiKey, 'llama-3.3-70b-versatile',
+    [{ role: 'user', content: 'Say "OK" in JSON: {"status":"OK"}' }],
+    20
+  );
+  if (status === 200) {
+    const content = data.choices?.[0]?.message?.content || '';
+    const usage = data.usage || {};
+    write(`✅ OK (${elapsed}ms)`, 'ok');
+    write(`Response: ${content.trim()}`, 'ok');
+    write(`Tokens: input=${usage.prompt_tokens} output=${usage.completion_tokens} total=${usage.total_tokens}`, 'info');
+    if (headers['x-ratelimit-remaining-tokens']) {
+      write(`Rate limit remaining tokens: ${headers['x-ratelimit-remaining-tokens']}`, 'info');
+      write(`Rate limit limit tokens: ${headers['x-ratelimit-limit-tokens']}`, 'info');
+      write(`Rate limit remaining requests: ${headers['x-ratelimit-remaining-requests']}`, 'info');
+    }
+  } else if (status === 429) {
+    const msg = data.error?.message || '';
+    write(`❌ RATE LIMITED (429)`, 'err');
+    write(`Message: ${msg}`, 'warn');
+    const match = msg.match(/try again in ([\d.]+)s/i);
+    if (match) write(`→ Tunggu ${Math.ceil(parseFloat(match[1]))} detik`, 'warn');
+  } else {
+    write(`❌ HTTP ${status}: ${data.error?.message}`, 'err');
+  }
+}
+
+// ── TEST 4: Compound beta ─────────────────────────────
+async function testCompound(apiKey) {
+  write('--- TEST 4: compound-beta ---', 'info');
+  const { status, data, elapsed } = await groqCall(
+    apiKey, 'compound-beta',
+    [{ role: 'user', content: 'What is the current IHSG index value? Give a 1 sentence answer.' }],
+    100
+  );
+  if (status === 200) {
+    const content = data.choices?.[0]?.message?.content || '';
+    write(`✅ compound-beta OK (${elapsed}ms)`, 'ok');
+    write(`Response: ${content.trim()}`, 'ok');
+  } else if (status === 429) {
+    write(`❌ RATE LIMITED — compound-beta juga kena limit`, 'err');
+    write(`Msg: ${data.error?.message}`, 'warn');
+  } else if (status === 404 || status === 400) {
+    write(`⚠️ compound-beta tidak tersedia di akun ini (${status})`, 'warn');
+    write(`→ App akan fallback ke llama-3.3-70b`, 'info');
+  } else {
+    write(`❌ HTTP ${status}: ${data.error?.message}`, 'err');
+  }
+}
+
+// ── TEST 5: Fase 1 full ───────────────────────────────
+async function testPhase1(apiKey) {
+  write('--- TEST 5: Fase 1 Filter (prompt kecil) ---', 'info');
+  const today = new Date().toLocaleDateString('id-ID', {weekday:'long',year:'numeric',month:'long',day:'numeric'});
+  const prompt = `Analis IDX. ${today}. Watchlist: BBCA,BBRI,TLKM,ADRO,UNVR,ASII,KLBF.
+Pilih 3 saham terbaik hari ini.
+JSON saja: {"candidates":["X","Y","Z"],"marketSentiment":"neutral"}`;
+
+  const t0 = Date.now();
+  const { status, data, headers } = await groqCall(
+    apiKey, 'llama-3.3-70b-versatile',
+    [{ role: 'user', content: prompt }],
+    80
+  );
+
+  if (status === 200) {
+    const content = data.choices?.[0]?.message?.content || '';
+    const usage = data.usage || {};
+    write(`✅ Fase 1 OK (${Date.now()-t0}ms)`, 'ok');
+    write(`Response: ${content.trim()}`, 'ok');
+    write(`Tokens used: ${usage.total_tokens}`, 'info');
+    if (headers['x-ratelimit-remaining-tokens']) {
+      write(`Token remaining this minute: ${headers['x-ratelimit-remaining-tokens']} / ${headers['x-ratelimit-limit-tokens']}`, 'info');
+    }
+    // Try parse
+    try {
+      const j = JSON.parse(content.match(/\{[\s\S]*?\}/)?.[0] || '{}');
+      write(`Kandidat: ${j.candidates?.join(', ')}`, 'ok');
+      write(`Sentimen: ${j.marketSentiment}`, 'ok');
+    } catch(e) {
+      write(`⚠️ JSON parse gagal — tapi response ada`, 'warn');
+    }
+  } else if (status === 429) {
+    write(`❌ RATE LIMITED`, 'err');
+    write(`${data.error?.message}`, 'warn');
+    write(`→ Limit token per menit: ${headers['x-ratelimit-limit-tokens'] || 'tidak diketahui'}`, 'info');
+  } else {
+    write(`❌ HTTP ${status}: ${data.error?.message}`, 'err');
+  }
+}
+
+// ── TEST 6: Fase 2 mini (2 saham) ────────────────────
+async function testPhase2(apiKey) {
+  write('--- TEST 6: Fase 2 — 2 saham saja ---', 'info');
+  const prompt = `Analis IDX Indonesia. Cari harga BBCA dan TLKM hari ini lalu beri rekomendasi.
+JSON saja: {"recommendations":[{"ticker":"BBCA","signal":"buy","currentPrice":9450,"reasoning":"1 kalimat"}]}`;
+
+  const { status, data } = await groqCall(
+    apiKey, 'compound-beta',
+    [{ role: 'user', content: prompt }],
+    300
+  );
+
+  if (status === 200) {
+    const content = data.choices?.[0]?.message?.content || '';
+    write(`✅ Fase 2 OK`, 'ok');
+    write(`Response: ${content.slice(0,300)}...`, 'ok');
+    write(`Tokens: ${data.usage?.total_tokens}`, 'info');
+  } else {
+    write(`❌ HTTP ${status}: ${data.error?.message}`, 'err');
+  }
+}
+
+// ── TEST 7: Rate limit headers ────────────────────────
+async function testLimits(apiKey) {
+  write('--- TEST 7: Rate limit info ---', 'info');
+  const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+    body: JSON.stringify({
+      model: 'llama-3.3-70b-versatile',
+      messages: [{ role: 'user', content: 'Hi' }],
+      max_tokens: 5
+    })
+  });
+  const headers = {};
+  for (const [k,v] of res.headers.entries()) headers[k] = v;
+  const data = await res.json();
+
+  write(`HTTP Status: ${res.status}`, res.ok ? 'ok' : 'err');
+  write('--- Rate limit headers ---', 'dim');
+  const rlKeys = Object.keys(headers).filter(k => k.startsWith('x-ratelimit') || k.startsWith('x-groq'));
+  if (rlKeys.length === 0) {
+    write('Tidak ada rate limit header (mungkin CORS memblokir)', 'warn');
+  }
+  rlKeys.forEach(k => write(`${k}: ${headers[k]}`, 'info'));
+  if (data.usage) {
+    write(`Tokens used in this call: ${data.usage.total_tokens}`, 'info');
+  }
+  if (data.error) {
+    write(`Error: ${data.error.message}`, 'err');
+    // Parse retry time
+    const match = (data.error.message||'').match(/try again in ([\d.]+)s/i);
+    if (match) write(`→ Retry setelah: ${Math.ceil(parseFloat(match[1]))} detik`, 'warn');
+  }
+}
+</script>
+</body>
+</html>

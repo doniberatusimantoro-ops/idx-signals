@@ -771,10 +771,6 @@ Respond JSON saja tanpa markdown:
       if (bar) bar.style.width = Math.min(50 + elapsed * 1.2, 88) + '%';
     }, 5000);
 
-    const today2 = new Date().toLocaleDateString('id-ID', {day:'numeric',month:'long',year:'numeric',timeZone:'Asia/Jakarta'});
-    const allRecs = [];
-    let marketCondition = phase1.marketSentiment || 'neutral';
-    let marketComment = '';
     const today2 = new Date().toLocaleDateString('id-ID',{day:'numeric',month:'long',year:'numeric',timeZone:'Asia/Jakarta'});
     const allRecs = [];
     let marketCondition = phase1.marketSentiment || 'neutral';
@@ -887,7 +883,6 @@ JSON saja: {"marketCondition":"bullish|neutral|bearish","marketComment":"1 kalim
       } catch(e) { /* non-critical */ }
     }
 
-    };
 
     setLoading('Selesai!', 'Rekomendasi siap', 100);
     candidates.forEach(c => {

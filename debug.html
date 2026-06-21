@@ -184,9 +184,9 @@ async function testMini(apiKey) {
 
 // ── TEST 4: Compound beta ─────────────────────────────
 async function testCompound(apiKey) {
-  write('--- TEST 4: compound-beta ---', 'info');
+  write('--- TEST 4: groq/compound (dengan web search) ---', 'info');
   const { status, data, elapsed } = await groqCall(
-    apiKey, 'compound-beta',
+    apiKey, 'groq/compound',
     [{ role: 'user', content: 'What is the current IHSG index value? Give a 1 sentence answer.' }],
     100
   );
@@ -253,7 +253,7 @@ async function testPhase2(apiKey) {
 JSON saja: {"recommendations":[{"ticker":"BBCA","signal":"buy","currentPrice":9450,"reasoning":"1 kalimat"}]}`;
 
   const { status, data } = await groqCall(
-    apiKey, 'compound-beta',
+    apiKey, 'groq/compound',
     [{ role: 'user', content: prompt }],
     300
   );

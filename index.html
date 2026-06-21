@@ -306,7 +306,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
       </div>
       <div class="settings-row">
         <span class="settings-key">Model</span>
-        <span class="settings-val">compound-beta</span>
+        <span class="settings-val">groq/compound</span>
       </div>
       <div class="settings-row">
         <span class="settings-key">Web Search</span>
@@ -497,40 +497,60 @@ function checkPendingOutcomes() {
 // ═══════════════════════════════════════════════════════
 // GROQ API CALL — with retry on rate limit
 // ═══════════════════════════════════════════════════════
+// Model names confirmed from debug:
+// - Fast filter  : llama-3.3-70b-versatile  (~400ms, no web search)
+// - Web search   : groq/compound             (~6s, has web search)
+// - Fallback     : groq/compound-mini        (lighter compound model)
+const MODELS = {
+  filter:   'llama-3.3-70b-versatile',
+  compound: 'groq/compound',
+  mini:     'groq/compound-mini'
+};
+
 async function callGroq(messages, apiKey, {
-  model = 'compound-beta',
-  maxTokens = 1200,
+  model = MODELS.compound,
+  maxTokens = 800,
   temperature = 0.2,
   retries = 3,
+  timeoutMs = 45000,
   onLog = null
 } = {}) {
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
-      const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-        body: JSON.stringify({ model, messages, temperature, max_tokens: maxTokens })
-      });
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-      // Rate limited — wait and retry
+      let res;
+      try {
+        res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+          method: 'POST',
+          signal: controller.signal,
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+          body: JSON.stringify({ model, messages, temperature, max_tokens: maxTokens })
+        });
+      } finally {
+        clearTimeout(timer);
+      }
+
+      // Rate limited — read retry time from error message and wait
       if (res.status === 429) {
         const err = await res.json();
-        // Extract retry-after seconds from error message if available
-        const wait = (() => {
-          const msg = err.error?.message || '';
-          const match = msg.match(/try again in ([\d.]+)s/i);
-          return match ? Math.ceil(parseFloat(match[1])) + 1 : 15 * attempt;
-        })();
+        const msg = err.error?.message || '';
+        const match = msg.match(/try again in ([\d.]+)s/i);
+        const wait = match ? Math.ceil(parseFloat(match[1])) + 2 : 20 * attempt;
         if (onLog) onLog(`⏳ Rate limit — menunggu ${wait} detik (percobaan ${attempt}/${retries})...`);
         await new Promise(r => setTimeout(r, wait * 1000));
         continue;
       }
 
-      // Model not found — fallback to llama
+      // Model not found — try fallback chain
       if (res.status === 404 || res.status === 400) {
-        if (model === 'compound-beta') {
-          if (onLog) onLog('ℹ️ compound-beta tidak tersedia, beralih ke llama-3.3-70b...');
-          return callGroq(messages, apiKey, { model: 'llama-3.3-70b-versatile', maxTokens, temperature, retries, onLog });
+        const fallback = model === MODELS.compound ? MODELS.mini
+                       : model === MODELS.mini ? MODELS.filter
+                       : null;
+        if (fallback) {
+          if (onLog) onLog(`ℹ️ ${model} tidak tersedia, beralih ke ${fallback}...`);
+          return callGroq(messages, apiKey, { model: fallback, maxTokens, temperature, retries, timeoutMs, onLog });
         }
         const err = await res.json();
         throw new Error(err.error?.message || `HTTP ${res.status}`);
@@ -542,11 +562,19 @@ async function callGroq(messages, apiKey, {
       }
 
       const data = await res.json();
-      return data.choices?.[0]?.message?.content || '';
+      const content = data.choices?.[0]?.message?.content || '';
+      const tokens = data.usage?.total_tokens || 0;
+      if (onLog && tokens) onLog(`📊 Token digunakan: ${tokens}`);
+      return content;
 
     } catch(e) {
+      if (e.name === 'AbortError') {
+        if (onLog) onLog(`⏱️ Timeout ${timeoutMs/1000}s (percobaan ${attempt}/${retries})`);
+        if (attempt < retries) { await new Promise(r => setTimeout(r, 3000)); continue; }
+        throw new Error(`Request timeout setelah ${timeoutMs/1000} detik. Coba lagi.`);
+      }
       if (attempt === retries) throw e;
-      if (onLog) onLog(`⚠️ Error, mencoba ulang... (${attempt}/${retries})`);
+      if (onLog) onLog(`⚠️ Error: ${e.message} — mencoba ulang (${attempt}/${retries})`);
       await new Promise(r => setTimeout(r, 3000 * attempt));
     }
   }
@@ -649,7 +677,7 @@ Respond JSON saja tanpa markdown:
     const phase1Raw = await callGroq(
       [{ role: 'user', content: phase1Prompt }],
       apiKey,
-      { model: 'llama-3.3-70b-versatile', maxTokens: 150, temperature: 0.1, retries: 3, onLog }
+      { model: MODELS.filter, maxTokens: 150, temperature: 0.1, retries: 3, onLog }
     );
 
     const p1Match = phase1Raw.match(/\{[\s\S]*?\}/);
@@ -667,7 +695,7 @@ Respond JSON saja tanpa markdown:
     // ════════════════════════════════════════════════
     // FASE 2 — ANALISIS DALAM dengan web search
     // Hanya untuk 5 kandidat terpilih (~800 token input)
-    // Model: compound-beta (web search built-in)
+    // Model: groq/compound (web search built-in)
     // ════════════════════════════════════════════════
     candidates.forEach(c => addLog(`🔍 Search: harga & berita ${c} terkini`));
     setLoading('Fase 2 — AI mencari data live...', `Web search untuk ${candidates.length} saham`, 50);
@@ -697,7 +725,7 @@ JSON tanpa markdown:
     const phase2Raw = await callGroq(
       [{ role: 'user', content: phase2Prompt }],
       apiKey,
-      { model: 'compound-beta', maxTokens: 1500, temperature: 0.2, retries: 4, onLog }
+      { model: MODELS.compound, maxTokens: 1200, temperature: 0.2, retries: 4, timeoutMs: 60000, onLog }
     );
 
     const p2Match = phase2Raw.match(/\{[\s\S]*\}/);

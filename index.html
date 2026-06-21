@@ -697,8 +697,22 @@ Respond JSON saja tanpa markdown:
     // Hanya untuk 5 kandidat terpilih (~800 token input)
     // Model: groq/compound (web search built-in)
     // ════════════════════════════════════════════════
-    candidates.forEach(c => addLog(`🔍 Search: harga & berita ${c} terkini`));
-    setLoading('Fase 2 — AI mencari data live...', `Web search untuk ${candidates.length} saham`, 50);
+    candidates.forEach(c => addLog(`🔍 Akan search: harga & berita ${c} terkini`));
+    setLoading(
+      'Fase 2 — AI mencari data live...',
+      `groq/compound sedang web search untuk: ${candidates.join(', ')}<br><span style="color:var(--text3);font-size:10px">Proses ini butuh 20-40 detik karena AI search internet secara real-time</span>`,
+      50
+    );
+
+    // Countdown timer untuk UX — supaya user tahu app tidak hang
+    let elapsed = 0;
+    const countdownInterval = setInterval(() => {
+      elapsed += 5;
+      const lbl = document.getElementById('loading-label');
+      if (lbl) lbl.textContent = `Fase 2 — Mencari data... (${elapsed}s)`;
+      const bar = document.getElementById('progress-bar');
+      if (bar) bar.style.width = Math.min(50 + elapsed, 88) + '%';
+    }, 5000);
 
     const holdingsCtx = state.holdings.length > 0
       ? state.holdings.filter(h => candidates.includes(h.ticker))
@@ -729,6 +743,7 @@ JSON tanpa markdown:
     );
 
     const p2Match = phase2Raw.match(/\{[\s\S]*\}/);
+    clearInterval(countdownInterval);
     if (!p2Match) throw new Error('Fase 2 tidak menghasilkan JSON valid. Coba lagi.');
     const result = JSON.parse(p2Match[0]);
 
@@ -767,6 +782,7 @@ JSON tanpa markdown:
     setTimeout(() => { logEl.classList.remove('visible'); }, 5000);
 
   } catch(err) {
+    if (typeof countdownInterval !== 'undefined') clearInterval(countdownInterval);
     logEl.classList.remove('visible');
     listEl.innerHTML = `<div class="empty-state">
       <div class="empty-icon">⚠️</div>

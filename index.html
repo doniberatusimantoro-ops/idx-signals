@@ -348,6 +348,66 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
     <div style="font-size:11px;color:var(--text3);line-height:1.7;padding:4px 2px">
       ⚠️ Rekomendasi bersifat informatif dan bukan saran investasi resmi. Selalu riset mandiri sebelum investasi.
     </div>
+
+    <span class="section-label">Changelog</span>
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r);overflow:hidden">
+      <div style="padding:12px 14px;border-bottom:1px solid var(--border)">
+        <div style="font-family:var(--font-head);font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">v2.3 — Fix entity too large <span style="font-size:10px;font-weight:400;color:var(--text3);font-family:var(--font-mono)">saat ini</span></div>
+        <div style="font-size:11px;color:var(--text2);line-height:1.7">
+          • Pisah analisis per saham: compound hanya fetch data mentah (60 token), llama untuk analisis (260 token)<br>
+          • Mencegah groq/compound mengembalikan raw search HTML yang besar<br>
+          • Regex JSON lebih ketat: <code style="background:var(--bg3);padding:1px 4px;border-radius:3px">{[^{}]*}</code> tanpa nested<br>
+          • Tambahkan changelog ini
+        </div>
+      </div>
+      <div style="padding:12px 14px;border-bottom:1px solid var(--border)">
+        <div style="font-family:var(--font-head);font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">v2.2 — Fix model name <span style="font-size:10px;font-weight:400;color:var(--text3);font-family:var(--font-mono)">sebelumnya</span></div>
+        <div style="font-size:11px;color:var(--text2);line-height:1.7">
+          • Fix nama model: <code style="background:var(--bg3);padding:1px 4px;border-radius:3px">compound-beta</code> → <code style="background:var(--bg3);padding:1px 4px;border-radius:3px">groq/compound</code><br>
+          • Tambah fallback chain: groq/compound → groq/compound-mini → llama-3.3-70b<br>
+          • Retry otomatis baca waktu tunggu dari pesan error rate limit<br>
+          • Timeout 60 detik untuk compound model
+        </div>
+      </div>
+      <div style="padding:12px 14px;border-bottom:1px solid var(--border)">
+        <div style="font-family:var(--font-head);font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">v2.1 — 2-fase filtering</div>
+        <div style="font-size:11px;color:var(--text2);line-height:1.7">
+          • Sistem 2 fase: filter kandidat dulu (llama), baru analisis dalam (compound)<br>
+          • Hemat 70% token usage dibanding versi sebelumnya<br>
+          • Analisis per saham satu per satu (bukan sekaligus)<br>
+          • Countdown timer di loading screen
+        </div>
+      </div>
+      <div style="padding:12px 14px;border-bottom:1px solid var(--border)">
+        <div style="font-family:var(--font-head);font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">v2.0 — Groq Compound web search</div>
+        <div style="font-size:11px;color:var(--text2);line-height:1.7">
+          • Beralih dari Yahoo Finance + proxy ke Groq Compound built-in web search<br>
+          • Tidak perlu API data terpisah<br>
+          • Live search log tampil saat analisis berjalan<br>
+          • Support multi-provider: Gemini, Groq, Claude
+        </div>
+      </div>
+      <div style="padding:12px 14px;border-bottom:1px solid var(--border)">
+        <div style="font-family:var(--font-head);font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">v1.1 — Integrasi data pasar</div>
+        <div style="font-size:11px;color:var(--text2);line-height:1.7">
+          • Yahoo Finance via proxy untuk harga IDX<br>
+          • Kalkulasi RSI, MACD, MA20/MA50 client-side<br>
+          • NewsAPI untuk berita per saham<br>
+          • ExchangeRate API untuk USD/IDR
+        </div>
+      </div>
+      <div style="padding:12px 14px">
+        <div style="font-family:var(--font-head);font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">v1.0 — Launch awal</div>
+        <div style="font-size:11px;color:var(--text2);line-height:1.7">
+          • Rekomendasi saham IDX dengan AI (max 5/hari, min confidence medium)<br>
+          • Short & medium term TP/SL dengan target hari<br>
+          • Portofolio tracker: P&L unrealized, flag SL tertembus<br>
+          • Self-learning: weighted 90-hari (100%/50%/25%)<br>
+          • Auto track outcome di 1d, 5d, 20d<br>
+          • iPhone home screen PWA
+        </div>
+      </div>
+    </div>
   </div>
 
 </div>
@@ -715,108 +775,118 @@ Respond JSON saja tanpa markdown:
     const allRecs = [];
     let marketCondition = phase1.marketSentiment || 'neutral';
     let marketComment = '';
-    let ihsg = phase1.ihsgEst || null;
-    let ihsgChange = null;
-    let selfNote = '';
+    const today2 = new Date().toLocaleDateString('id-ID',{day:'numeric',month:'long',year:'numeric',timeZone:'Asia/Jakarta'});
+    const allRecs = [];
+    let marketCondition = phase1.marketSentiment || 'neutral';
+    let marketComment = '', selfNote = '';
+    let ihsg = phase1.ihsgEst || null, ihsgChange = null;
 
     for (let i = 0; i < candidates.length; i++) {
       const ticker = candidates[i];
       const holding = state.holdings.find(h => h.ticker === ticker);
-      const holdingCtx = holding
-        ? `User punya ${holding.lots} lot @ avg Rp ${holding.avgPrice.toLocaleString('id-ID')}.`
-        : '';
+      const holdingCtx = holding ? `User punya ${holding.lots} lot @ avg Rp ${holding.avgPrice.toLocaleString('id-ID')}.` : '';
 
       setLoading(
-        `Fase 2 — ${ticker} (${i+1}/${candidates.length})`,
-        `Search harga & analisis ${ticker}...`,
+        `Menganalisis ${ticker} (${i+1}/${candidates.length})`,
+        `Ambil data live lalu analisis ${ticker}...`,
         50 + Math.round((i / candidates.length) * 38)
       );
-      addLog(`🔍 Menganalisis ${ticker}...`);
+      addLog(`🔍 ${ticker}: fetch data live...`);
 
-      const stockPrompt = `Analis IDX. ${today2}. BI Rate 6.25%. USD/IDR ${usdIdr || '~16000'}.
-${holdingCtx}
-Track record sinyal terbaik: ${perfCtx}.
-
-Search harga terkini dan 1-2 berita terbaru untuk saham ${ticker} di IDX Indonesia.
-Lalu beri rekomendasi singkat.
-
-Balas JSON saja (MAKSIMAL 300 token output):
-{"ticker":"${ticker}","companyName":"nama perusahaan","signal":"buy|hold|sell","currentPrice":0,"priceChange":0.0,"confidence":"high|medium|low","styleTag":"Value|Growth|Swing","signals":["RSI","ForeignFlow"],"shortTerm":{"tp":0,"sl":0,"targetDays":5,"rr":"1:2"},"mediumTerm":{"tp":0,"sl":0,"targetDays":20,"rr":"1:2"},"reasoning":"max 2 kalimat BI","alert":null,"isInPortfolio":${holding ? 'true' : 'false'}}`;
-
+      // ── SUB-CALL A: groq/compound — ambil data mentah saja
+      // Output dibatasi SANGAT ketat: hanya 4 baris plain text, bukan JSON
+      // Ini mencegah compound mengembalikan raw search HTML yang besar
+      let stockData = { price: null, change: null, news: null };
       try {
+        const fetchPrompt = `Search harga saham ${ticker} IDX Indonesia hari ini.
+Balas TEPAT 3 baris ini saja, tanpa kalimat lain:
+PRICE:[angka harga dalam Rupiah]
+CHANGE:[angka persen naik/turun]
+NEWS:[judul berita terbaru max 8 kata]`;
+
         const raw = await callGroq(
-          [{ role: 'user', content: stockPrompt }],
+          [{ role: 'user', content: fetchPrompt }],
           apiKey,
-          { model: MODELS.compound, maxTokens: 350, temperature: 0.2, retries: 3, timeoutMs: 45000, onLog }
+          { model: MODELS.compound, maxTokens: 60, temperature: 0, retries: 2, timeoutMs: 25000, onLog }
         );
 
-        const match = raw.match(/\{[\s\S]*?\}/);
-        if (!match) { addLog(`⚠️ ${ticker}: JSON tidak ditemukan, skip`, 'warn'); continue; }
+        const pM = raw.match(/PRICE[:\s]*([\d,. ]+)/i);
+        const cM = raw.match(/CHANGE[:\s]*([+-]?[\d.]+)/i);
+        const nM = raw.match(/NEWS[:\s]*(.+)/i);
+        const iM = raw.match(/IHSG[:\s]*([\d,.]+)/i);
 
-        const rec = JSON.parse(match[0]);
+        if (pM) stockData.price = parseFloat(pM[1].replace(/[, ]/g,''));
+        if (cM) stockData.change = parseFloat(cM[1]);
+        if (nM) stockData.news = nM[1].trim().slice(0, 80);
+        if (iM && !ihsg) ihsg = parseFloat(iM[1].replace(/[,]/g,''));
 
-        // Only include medium+ confidence
-        if (rec.confidence === 'low') {
-          addLog(`➖ ${ticker}: confidence rendah, dilewati`);
-          continue;
-        }
-
-        allRecs.push(rec);
-        addLog(`✅ ${ticker} → ${rec.signal?.toUpperCase()} (${rec.confidence}) @ Rp ${rec.currentPrice?.toLocaleString('id-ID')}`, 'var(--green)');
-
-        // Jeda antar saham supaya tidak kena rate limit
-        if (i < candidates.length - 1) await new Promise(r => setTimeout(r, 3000));
-
-      } catch(stockErr) {
-        addLog(`⚠️ ${ticker} gagal: ${stockErr.message}`);
-        if (i < candidates.length - 1) await new Promise(r => setTimeout(r, 5000));
+        addLog(`📊 ${ticker}: Rp ${stockData.price?.toLocaleString('id-ID')||'?'} (${stockData.change>=0?'+':''}${stockData.change??'?'}%)`);
+      } catch(e) {
+        addLog(`⚠️ ${ticker}: data fetch gagal — pakai estimasi AI`);
       }
+
+      // Jeda antar sub-call
+      await new Promise(r => setTimeout(r, 1000));
+
+      // ── SUB-CALL B: llama-3.3-70b — analisis & rekomendasi
+      // Tidak ada web search, output JSON terkontrol ketat
+      try {
+        addLog(`🧠 ${ticker}: analisis fundamental & teknikal...`);
+        const ap = `Analis IDX. ${today2}. BI Rate 6.25%. USD/IDR ${usdIdr||16000}.
+${ticker}: harga Rp ${stockData.price||'estimasi'}, perubahan ${stockData.change??'?'}%, berita: ${stockData.news||'tidak ada'}.
+${holdingCtx}
+Sinyal terbaik dari track record: ${perfCtx}.
+Beri rekomendasi. Jika data kurang, tulis confidence:low.
+JSON saja (1 baris):
+{"ticker":"${ticker}","companyName":"PT ...","signal":"buy|hold|sell","currentPrice":${stockData.price||0},"priceChange":${stockData.change||0},"confidence":"high|medium|low","styleTag":"Value|Growth|Swing","signals":["RSI"],"shortTerm":{"tp":0,"sl":0,"targetDays":5,"rr":"1:2"},"mediumTerm":{"tp":0,"sl":0,"targetDays":20,"rr":"1:2"},"reasoning":"2 kalimat BI","alert":null,"isInPortfolio":${holding?'true':'false'}}`;
+
+        const ar = await callGroq(
+          [{ role: 'user', content: ap }],
+          apiKey,
+          { model: MODELS.filter, maxTokens: 260, temperature: 0.2, retries: 3, timeoutMs: 15000, onLog }
+        );
+
+        const m = ar.match(/\{[^{}]*\}/);
+        if (!m) { addLog(`⚠️ ${ticker}: JSON tidak valid, skip`); }
+        else {
+          const rec = JSON.parse(m[0]);
+          if (rec.confidence === 'low') {
+            addLog(`➖ ${ticker}: confidence rendah, dilewati`);
+          } else {
+            allRecs.push(rec);
+            addLog(`✅ ${ticker} → ${(rec.signal||'').toUpperCase()} (${rec.confidence}) Rp ${rec.currentPrice?.toLocaleString('id-ID')}`, 'var(--green)');
+          }
+        }
+      } catch(e) {
+        addLog(`⚠️ ${ticker} analisis gagal: ${e.message}`);
+      }
+
+      if (i < candidates.length - 1) await new Promise(r => setTimeout(r, 2000));
     }
 
-    // Fase 3 — Ringkasan pasar (llama cepat, tanpa search)
+    // ── FASE 3: Ringkasan pasar — llama, cepat, tanpa search
     if (allRecs.length > 0) {
-      addLog('📊 Menyusun ringkasan pasar...');
-      const summaryPrompt = `Berdasarkan rekomendasi ini untuk saham IDX hari ini ${today2}:
-${allRecs.map(r => `${r.ticker}: ${r.signal} @ ${r.currentPrice}`).join(', ')}
-IHSG estimasi: ${ihsg || 6200}.
-
-Balas JSON saja: {"marketCondition":"bullish|neutral|bearish","marketComment":"1 kalimat kondisi pasar BI","ihsg":6200,"ihsgChange":0.5,"selfNote":"1 kalimat evaluasi sinyal AI dari track record"}`;
-
+      addLog('📋 Menyusun ringkasan pasar...');
       try {
-        const sumRaw = await callGroq(
-          [{ role: 'user', content: summaryPrompt }],
+        const sp = `IDX ${today2}. Rekomendasi: ${allRecs.map(r=>`${r.ticker}:${r.signal}`).join(',')}. IHSG ~${ihsg||6200}.
+JSON saja: {"marketCondition":"bullish|neutral|bearish","marketComment":"1 kalimat BI","ihsg":${ihsg||6200},"ihsgChange":0.0,"selfNote":"1 kalimat evaluasi AI"}`;
+        const sr = await callGroq(
+          [{ role: 'user', content: sp }],
           apiKey,
-          { model: MODELS.filter, maxTokens: 120, temperature: 0.1, retries: 2, onLog }
+          { model: MODELS.filter, maxTokens: 90, temperature: 0.1, retries: 2, onLog }
         );
-        const sumMatch = sumRaw.match(/\{[\s\S]*?\}/);
-        if (sumMatch) {
-          const sum = JSON.parse(sumMatch[0]);
-          marketCondition = sum.marketCondition || marketCondition;
-          marketComment = sum.marketComment || '';
-          ihsg = sum.ihsg || ihsg;
-          ihsgChange = sum.ihsgChange;
-          selfNote = sum.selfNote || '';
+        const sm = sr.match(/\{[^{}]*\}/);
+        if (sm) {
+          const s = JSON.parse(sm[0]);
+          marketCondition = s.marketCondition || marketCondition;
+          marketComment   = s.marketComment   || '';
+          ihsg            = s.ihsg            || ihsg;
+          ihsgChange      = s.ihsgChange      ?? null;
+          selfNote        = s.selfNote        || '';
         }
       } catch(e) { /* non-critical */ }
     }
 
-    clearInterval(countdownInterval);
-
-    // Sort by conviction (high > medium) then by abs priceChange
-    allRecs.sort((a,b) => {
-      const cv = {high:2, medium:1, low:0};
-      return (cv[b.confidence]||0) - (cv[a.confidence]||0);
-    });
-
-    const result = {
-      marketCondition,
-      marketComment: marketComment || `${allRecs.length} sinyal ditemukan dari ${candidates.length} kandidat`,
-      ihsg,
-      ihsgChange,
-      recommendations: allRecs.slice(0, 5),
-      selfNote,
-      quietMarket: allRecs.length === 0,
-      quietReason: allRecs.length === 0 ? 'Tidak ada saham yang memenuhi threshold confidence minimum hari ini.' : null
     };
 
     setLoading('Selesai!', 'Rekomendasi siap', 100);

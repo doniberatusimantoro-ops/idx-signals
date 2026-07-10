@@ -773,12 +773,15 @@ JSON satu baris tanpa markdown:
         const m = ar.match(/\{[^{}]*\}/);
         if (!m) { addLog(`⚠️ ${ticker}: JSON tidak valid, skip`); }
         else {
-          const rec = JSON.parse(m[0]);
-          if (rec.confidence === 'low') {
+          const raw = JSON.parse(m[0]);
+          const rec = validateRec(raw, ticker);
+          if (!rec) {
+            addLog(`⚠️ ${ticker}: data tidak lengkap, skip`);
+          } else if (rec.confidence === 'low') {
             addLog(`➖ ${ticker}: confidence rendah, dilewati`);
           } else {
             allRecs.push(rec);
-            addLog(`✅ ${ticker} → ${(rec.signal||'').toUpperCase()} (${rec.confidence}) Rp ${rec.currentPrice?.toLocaleString('id-ID')}`, 'var(--green)');
+            addLog(`✅ ${ticker} → ${rec.signal.toUpperCase()} (${rec.confidence}) Rp ${rec.currentPrice.toLocaleString('id-ID')}`, 'var(--green)');
           }
         }
       } catch(e) {
@@ -859,9 +862,70 @@ JSON saja: {"marketCondition":"bullish|neutral|bearish","marketComment":"1 kalim
 }
 
 // ═══════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════
+// VALIDATE & SANITIZE AI RESPONSE
+// AI kadang mengembalikan JSON tidak lengkap — semua field
+// wajib ada nilainya sebelum dipakai di UI
+// ═══════════════════════════════════════════════════════
+function validateRec(rec, ticker) {
+  if (!rec || typeof rec !== 'object') return null;
+
+  // Required string fields
+  const signal = (rec.signal || 'hold').toString().toLowerCase();
+  if (!['buy','sell','hold'].includes(signal)) return null;
+
+  const confidence = (rec.confidence || 'low').toString().toLowerCase();
+  if (!['high','medium','low'].includes(confidence)) return null;
+
+  // Sanitize numbers — default 0 if missing/NaN
+  const num = (v, fallback=0) => {
+    const n = parseFloat(v);
+    return isNaN(n) ? fallback : n;
+  };
+
+  const currentPrice = num(rec.currentPrice);
+  const priceChange  = num(rec.priceChange);
+
+  // Sanitize shortTerm and mediumTerm
+  const st = rec.shortTerm || {};
+  const mt = rec.mediumTerm || {};
+
+  return {
+    ticker:      (rec.ticker      || ticker || '').toString().toUpperCase(),
+    companyName: (rec.companyName || ticker || '').toString(),
+    signal,
+    currentPrice,
+    priceChange,
+    confidence,
+    styleTag:    (rec.styleTag    || 'Mixed').toString(),
+    signals:     Array.isArray(rec.signals) ? rec.signals : ['Fundamental'],
+    shortTerm: {
+      tp:         num(st.tp),
+      sl:         num(st.sl),
+      targetDays: num(st.targetDays, 5),
+      rr:         (st.rr || '1:2').toString()
+    },
+    mediumTerm: {
+      tp:         num(mt.tp),
+      sl:         num(mt.sl),
+      targetDays: num(mt.targetDays, 20),
+      rr:         (mt.rr || '1:2').toString()
+    },
+    reasoning:     (rec.reasoning    || '').toString(),
+    alert:         rec.alert          || null,
+    isInPortfolio: rec.isInPortfolio  === true
+  };
+}
+
+// ═══════════════════════════════════════════════════════
+// PROCESS RESULT
+// ═══════════════════════════════════════════════════════
 function processResult(result) {
-  state.recommendations = result.recommendations || [];
-  state.lastAnalysis = {...result, timestamp: Date.now()};
+  // Validate all recs before storing — defensive against incomplete AI JSON
+  state.recommendations = (result.recommendations || [])
+    .map(r => validateRec(r, r?.ticker))
+    .filter(Boolean);
+  state.lastAnalysis = {...result, recommendations: state.recommendations, timestamp: Date.now()};
 
   // Log to track record
   state.recommendations.forEach(r => {
@@ -915,7 +979,7 @@ function renderRecommendations(result) {
 
   result.recommendations.forEach((r, i) => {
     const sc={buy:'badge-buy',sell:'badge-sell',hold:'badge-hold'}[r.signal]||'badge-hold';
-    const sl={buy:'BELI',sell:'JUAL',hold:'TAHAN'}[r.signal]||r.signal.toUpperCase();
+    const sl={buy:'BELI',sell:'JUAL',hold:'TAHAN'}[r.signal]||(r.signal||'hold').toUpperCase();
     const cc = r.priceChange>=0?'pos':'neg';
     const cn={high:4,medium:2,low:1}[r.confidence]||2;
     const dots=[1,2,3,4,5].map(n=>`<div class="conf-dot ${n<=cn?'on':''}"></div>`).join('');

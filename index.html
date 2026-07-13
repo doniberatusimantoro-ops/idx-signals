@@ -352,7 +352,14 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
     <span class="section-label">Changelog</span>
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r);overflow:hidden">
       <div style="padding:12px 14px;border-bottom:1px solid var(--border)">
-        <div style="font-family:var(--font-head);font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">v2.4 — Hapus groq/compound <span style="font-size:10px;font-weight:400;color:var(--text3);font-family:var(--font-mono)">saat ini</span></div>
+        <div style="font-family:var(--font-head);font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">v2.5 — Retry saat confidence low <span style="font-size:10px;font-weight:400;color:var(--text3);font-family:var(--font-mono)">saat ini</span></div>
+        <div style="font-size:11px;color:var(--text2);line-height:1.7">
+          • Jika confidence LOW, AI coba ulang max 2x dengan angle berbeda<br>
+          • Attempt 1: analisis umum · Attempt 2: fokus teknikal · Attempt 3: fokus fundamental<br>
+          • Temperature dinaikkan di retry supaya AI tidak copy jawaban sebelumnya<br>
+          • Log menampilkan progress retry per saham secara real-time
+        </div>
+      </div>
         <div style="font-size:11px;color:var(--text2);line-height:1.7">
           • Hapus groq/compound sepenuhnya — selalu "entity too large" karena return raw HTML search<br>
           • Semua analisis sekarang pakai llama-3.3-70b-versatile saja (cepat, terkontrol)<br>
@@ -758,32 +765,71 @@ JSON saja: {"candidates":["A","B","C","D","E"],"marketSentiment":"bullish|neutra
       );
       addLog(`🧠 ${ticker}: analisis...`);
 
-      try {
+      // Helper: satu attempt analisis saham
+      async function analyzeStock(ticker, holding, holdingCtx, attempt) {
+        // Setiap retry pakai angle berbeda supaya AI tidak copy jawaban sebelumnya
+        const angles = [
+          // Attempt 1: analisis umum
+          `Analisis saham ${ticker} (IDX) berdasarkan kondisi terkini: fundamental, teknikal, dan sentimen sektor.`,
+          // Attempt 2: fokus teknikal & momentum
+          `Fokus pada momentum teknikal ${ticker}: RSI, MACD, volume, dan price action terkini. Apakah ada setup trading yang valid?`,
+          // Attempt 3: fokus fundamental & nilai
+          `Fokus pada nilai fundamental ${ticker}: valuasi vs sektor, pertumbuhan laba, dividen, dan katalis jangka menengah.`
+        ];
+        const angle = angles[Math.min(attempt, angles.length - 1)];
+        const retryNote = attempt > 0
+          ? `PENTING: Analisis sebelumnya menghasilkan confidence LOW. Coba dari sudut pandang berbeda. Jika sinyal memang ambigu, tetap berikan confidence MEDIUM dengan reasoning yang jelas daripada LOW.`
+          : '';
+
         const ap = `Analis IDX Indonesia senior. ${todayShort}. BI Rate 6.25%. USD/IDR ${usdIdr||16000}. ${holdingCtx}Track record: ${perfCtx}.
-Analisis saham ${ticker} (IDX) berdasarkan kondisi terkini: fundamental, teknikal, dan sentimen sektor.
+${angle}
+${retryNote}
 JSON satu baris tanpa markdown:
 {"ticker":"${ticker}","companyName":"nama PT","signal":"buy|hold|sell","currentPrice":0,"priceChange":0.0,"confidence":"high|medium|low","styleTag":"Value|Growth|Swing","signals":["RSI","Fundamental"],"shortTerm":{"tp":0,"sl":0,"targetDays":5,"rr":"1:2"},"mediumTerm":{"tp":0,"sl":0,"targetDays":20,"rr":"1:2"},"reasoning":"2 kalimat Bahasa Indonesia","alert":null,"isInPortfolio":${holding?'true':'false'}}`;
 
         const ar = await callGroq(
           [{ role: 'user', content: ap }],
           apiKey,
-          { model: MODELS.filter, maxTokens: 280, temperature: 0.2, retries: 3, timeoutMs: 20000, onLog }
+          { model: MODELS.filter, maxTokens: 280, temperature: attempt === 0 ? 0.2 : 0.4, retries: 2, timeoutMs: 20000, onLog }
         );
 
         const m = ar.match(/\{[^{}]*\}/);
-        if (!m) { addLog(`⚠️ ${ticker}: JSON tidak valid, skip`); }
-        else {
-          const raw = JSON.parse(m[0]);
-          const rec = validateRec(raw, ticker);
-          if (!rec) {
-            addLog(`⚠️ ${ticker}: data tidak lengkap, skip`);
-          } else if (rec.confidence === 'low') {
-            addLog(`➖ ${ticker}: confidence rendah, dilewati`);
-          } else {
-            allRecs.push(rec);
-            addLog(`✅ ${ticker} → ${rec.signal.toUpperCase()} (${rec.confidence}) Rp ${rec.currentPrice.toLocaleString('id-ID')}`, 'var(--green)');
+        if (!m) return null;
+        return validateRec(JSON.parse(m[0]), ticker);
+      }
+
+      try {
+        let rec = null;
+        const MAX_ATTEMPTS = 3;
+
+        for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+          if (attempt > 0) {
+            addLog(`🔄 ${ticker}: retry ${attempt}/${MAX_ATTEMPTS-1} (confidence sebelumnya rendah)...`);
+            await new Promise(r => setTimeout(r, 1500));
           }
+
+          rec = await analyzeStock(ticker, holding, holdingCtx, attempt);
+
+          if (!rec) {
+            addLog(`⚠️ ${ticker}: JSON tidak valid (attempt ${attempt+1})`);
+            continue;
+          }
+
+          if (rec.confidence !== 'low') break; // dapat medium/high — stop retry
+
+          addLog(`➖ ${ticker}: confidence rendah (attempt ${attempt+1}/${MAX_ATTEMPTS})`);
         }
+
+        // Evaluasi hasil akhir setelah semua attempt
+        if (!rec) {
+          addLog(`⚠️ ${ticker}: semua attempt gagal, skip`);
+        } else if (rec.confidence === 'low') {
+          addLog(`❌ ${ticker}: tetap low setelah ${MAX_ATTEMPTS} attempt, dilewati`);
+        } else {
+          allRecs.push(rec);
+          addLog(`✅ ${ticker} → ${rec.signal.toUpperCase()} (${rec.confidence}) Rp ${rec.currentPrice.toLocaleString('id-ID')}`, 'var(--green)');
+        }
+
       } catch(e) {
         addLog(`⚠️ ${ticker}: ${e.message}`);
       }

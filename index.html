@@ -352,12 +352,21 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
     <span class="section-label">Changelog</span>
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r);overflow:hidden">
       <div style="padding:12px 14px;border-bottom:1px solid var(--border)">
-        <div style="font-family:var(--font-head);font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">v2.5 — Retry saat confidence low <span style="font-size:10px;font-weight:400;color:var(--text3);font-family:var(--font-mono)">saat ini</span></div>
+        <div style="font-family:var(--font-head);font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">v2.6 — 3-batch scanning (max 15 saham) <span style="font-size:10px;font-weight:400;color:var(--text3);font-family:var(--font-mono)">saat ini</span></div>
+        <div style="font-size:11px;color:var(--text2);line-height:1.7">
+          • Fase 1 filter 15 kandidat sekaligus dibagi 3 batch prioritas (5+5+5)<br>
+          • Batch 2 dan 3 hanya dijalankan jika batch sebelumnya belum dapat 5 rekomendasi<br>
+          • Stop otomatis saat sudah dapat 5 rekomendasi medium/high confidence<br>
+          • Retry per angle tetap ada: teknikal → fundamental jika masih low<br>
+          • Log real-time menampilkan batch mana yang sedang berjalan
+        </div>
+      </div>
+      <div style="padding:12px 14px;border-bottom:1px solid var(--border)">
+        <div style="font-family:var(--font-head);font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">v2.5 — Retry saat confidence low</div>
         <div style="font-size:11px;color:var(--text2);line-height:1.7">
           • Jika confidence LOW, AI coba ulang max 2x dengan angle berbeda<br>
           • Attempt 1: analisis umum · Attempt 2: fokus teknikal · Attempt 3: fokus fundamental<br>
-          • Temperature dinaikkan di retry supaya AI tidak copy jawaban sebelumnya<br>
-          • Log menampilkan progress retry per saham secara real-time
+          • Temperature dinaikkan di retry supaya AI tidak copy jawaban sebelumnya
         </div>
       </div>
         <div style="font-size:11px;color:var(--text2);line-height:1.7">
@@ -720,128 +729,159 @@ async function runAnalysis() {
   }, 5000);
 
   try {
-    // ── FASE 1: Filter kandidat (llama, cepat) ──
-    setLoading('Fase 1 — Filter kandidat...', 'AI memilih saham terbaik dari watchlist', 10);
-    addLog('🔎 Fase 1: memilih kandidat...');
+    // ── FASE 1: Filter 15 kandidat sekaligus dibagi 3 batch ──
+    setLoading('Fase 1 — Filter kandidat...', 'AI memilih 15 kandidat dari watchlist', 10);
+    addLog('🔎 Fase 1: memilih 15 kandidat (3 batch x 5)...');
 
-    const watchlist = [...new Set([...holdingTickers, ...IDX_WATCHLIST])].slice(0, 20);
+    const watchlist = [...new Set([...holdingTickers, ...IDX_WATCHLIST])].slice(0, 24);
     const perfSigs = Object.entries(getWeightedPerf().signalAccuracy)
       .sort((a,b) => b[1]-a[1]).slice(0,3).map(([k,v]) => `${k}(${v}%)`).join(',') || 'RSI,MACD,Fundamental';
 
+    // Minta AI pilih 15 kandidat sekaligus, dibagi 3 batch prioritas
     const p1Prompt = `Analis IDX. ${today}. Watchlist: ${watchlist.join(',')}.
-Portofolio user: ${holdingTickers.join(',') || 'kosong'}. Sinyal terbaik: ${perfSigs}.
-Pilih TEPAT 5 saham paling menarik hari ini. Sertakan saham portofolio jika relevan.
-JSON saja: {"candidates":["A","B","C","D","E"],"marketSentiment":"bullish|neutral|bearish","ihsgEst":6200}`;
+Portofolio user: ${holdingTickers.join(',') || 'kosong'}. Sinyal terbaik historis: ${perfSigs}.
+Pilih 15 saham terbaik dari watchlist, dibagi 3 batch prioritas (masing-masing 5 saham):
+- batch1: 5 saham paling menarik hari ini (highest conviction)
+- batch2: 5 saham cadangan jika batch1 tidak cukup sinyal kuat
+- batch3: 5 saham terakhir jika masih kurang
+Sertakan saham portofolio user di batch1 jika ada potensi.
+JSON saja: {"batch1":["A","B","C","D","E"],"batch2":["F","G","H","I","J"],"batch3":["K","L","M","N","O"],"marketSentiment":"bullish|neutral|bearish","ihsgEst":6200}`;
 
     const p1Raw = await callGroq(
       [{ role: 'user', content: p1Prompt }],
       apiKey,
-      { model: MODELS.filter, maxTokens: 100, temperature: 0.1, retries: 3, onLog }
+      { model: MODELS.filter, maxTokens: 150, temperature: 0.1, retries: 3, onLog }
     );
-    const p1Match = p1Raw.match(/\{[^{}]*\}/);
+    const p1Match = p1Raw.match(/\{[\s\S]*?\}/);
     if (!p1Match) throw new Error('Fase 1 gagal. Coba lagi.');
     const phase1 = JSON.parse(p1Match[0]);
-    const candidates = (phase1.candidates || []).slice(0, 5);
-    if (!candidates.length) throw new Error('Tidak ada kandidat terpilih.');
+    const batch1 = (phase1.batch1 || []).slice(0, 5);
+    const batch2 = (phase1.batch2 || []).slice(0, 5);
+    const batch3 = (phase1.batch3 || []).slice(0, 5);
+    if (!batch1.length) throw new Error('Tidak ada kandidat terpilih.');
 
-    addLog(`✅ Kandidat: ${candidates.join(', ')}`, 'var(--green)');
+    addLog(`✅ Batch 1: ${batch1.join(', ')}`, 'var(--green)');
+    addLog(`📋 Batch 2: ${batch2.join(', ')}`);
+    addLog(`📋 Batch 3: ${batch3.join(', ')}`);
     await new Promise(r => setTimeout(r, 1500));
 
-    // ── FASE 2: Analisis per saham (llama, 1 call per saham) ──
+    // ── FASE 2: Analisis batch per batch, stop saat dapat 5 rekomendasi ──
     const allRecs = [];
+    const scanned = new Set();
     let marketCondition = phase1.marketSentiment || 'neutral';
     let marketComment = '', selfNote = '';
     let ihsg = phase1.ihsgEst || null, ihsgChange = null;
 
-    for (let i = 0; i < candidates.length; i++) {
-      const ticker = candidates[i];
-      const holding = state.holdings.find(h => h.ticker === ticker);
-      const holdingCtx = holding ? `User punya ${holding.lots} lot @ avg Rp ${holding.avgPrice.toLocaleString('id-ID')}. ` : '';
+    // Helper: analisis satu saham dengan retry per angle
+    async function analyzeStock(ticker, holding, holdingCtx, attempt) {
+      const angles = [
+        `Analisis saham ${ticker} (IDX) berdasarkan kondisi terkini: fundamental, teknikal, dan sentimen sektor.`,
+        `Fokus pada momentum teknikal ${ticker}: RSI, MACD, volume, dan price action terkini. Apakah ada setup trading yang valid?`,
+        `Fokus pada nilai fundamental ${ticker}: valuasi vs sektor, pertumbuhan laba, dividen, dan katalis jangka menengah.`
+      ];
+      const angle = angles[Math.min(attempt, angles.length - 1)];
+      const retryNote = attempt > 0
+        ? `PENTING: Analisis sebelumnya LOW. Coba sudut pandang berbeda. Jika ambigu, berikan MEDIUM dengan reasoning jelas.`
+        : '';
 
-      setLoading(
-        `Analisis ${ticker} (${i+1}/${candidates.length})`,
-        `Menganalisis ${ticker}...`,
-        15 + Math.round((i / candidates.length) * 75)
-      );
-      addLog(`🧠 ${ticker}: analisis...`);
-
-      // Helper: satu attempt analisis saham
-      async function analyzeStock(ticker, holding, holdingCtx, attempt) {
-        // Setiap retry pakai angle berbeda supaya AI tidak copy jawaban sebelumnya
-        const angles = [
-          // Attempt 1: analisis umum
-          `Analisis saham ${ticker} (IDX) berdasarkan kondisi terkini: fundamental, teknikal, dan sentimen sektor.`,
-          // Attempt 2: fokus teknikal & momentum
-          `Fokus pada momentum teknikal ${ticker}: RSI, MACD, volume, dan price action terkini. Apakah ada setup trading yang valid?`,
-          // Attempt 3: fokus fundamental & nilai
-          `Fokus pada nilai fundamental ${ticker}: valuasi vs sektor, pertumbuhan laba, dividen, dan katalis jangka menengah.`
-        ];
-        const angle = angles[Math.min(attempt, angles.length - 1)];
-        const retryNote = attempt > 0
-          ? `PENTING: Analisis sebelumnya menghasilkan confidence LOW. Coba dari sudut pandang berbeda. Jika sinyal memang ambigu, tetap berikan confidence MEDIUM dengan reasoning yang jelas daripada LOW.`
-          : '';
-
-        const ap = `Analis IDX Indonesia senior. ${todayShort}. BI Rate 6.25%. USD/IDR ${usdIdr||16000}. ${holdingCtx}Track record: ${perfCtx}.
+      const ap = `Analis IDX Indonesia senior. ${todayShort}. BI Rate 6.25%. USD/IDR ${usdIdr||16000}. ${holdingCtx}Track record: ${perfCtx}.
 ${angle}
 ${retryNote}
 JSON satu baris tanpa markdown:
 {"ticker":"${ticker}","companyName":"nama PT","signal":"buy|hold|sell","currentPrice":0,"priceChange":0.0,"confidence":"high|medium|low","styleTag":"Value|Growth|Swing","signals":["RSI","Fundamental"],"shortTerm":{"tp":0,"sl":0,"targetDays":5,"rr":"1:2"},"mediumTerm":{"tp":0,"sl":0,"targetDays":20,"rr":"1:2"},"reasoning":"2 kalimat Bahasa Indonesia","alert":null,"isInPortfolio":${holding?'true':'false'}}`;
 
-        const ar = await callGroq(
-          [{ role: 'user', content: ap }],
-          apiKey,
-          { model: MODELS.filter, maxTokens: 280, temperature: attempt === 0 ? 0.2 : 0.4, retries: 2, timeoutMs: 20000, onLog }
+      const ar = await callGroq(
+        [{ role: 'user', content: ap }],
+        apiKey,
+        { model: MODELS.filter, maxTokens: 280, temperature: attempt === 0 ? 0.2 : 0.4, retries: 2, timeoutMs: 20000, onLog }
+      );
+      const m = ar.match(/\{[^{}]*\}/);
+      if (!m) return null;
+      return validateRec(JSON.parse(m[0]), ticker);
+    }
+
+    // Helper: analisis satu batch, return early jika sudah 5 rekomendasi
+    async function analyzeBatch(batch, batchNum) {
+      if (allRecs.length >= 5) return; // sudah cukup
+
+      const remaining = batch.filter(t => !scanned.has(t));
+      if (!remaining.length) return;
+
+      addLog(`\n📦 Batch ${batchNum} (${remaining.join(', ')}) — perlu ${5 - allRecs.length} rekomendasi lagi`);
+
+      for (let i = 0; i < remaining.length; i++) {
+        if (allRecs.length >= 5) {
+          addLog(`🎯 Sudah dapat 5 rekomendasi — batch ${batchNum} dihentikan`);
+          break;
+        }
+
+        const ticker = remaining[i];
+        scanned.add(ticker);
+        const holding = state.holdings.find(h => h.ticker === ticker);
+        const holdingCtx = holding ? `User punya ${holding.lots} lot @ avg Rp ${holding.avgPrice.toLocaleString('id-ID')}. ` : '';
+        const totalScanned = scanned.size;
+        const totalMax = batch1.length + batch2.length + batch3.length;
+
+        setLoading(
+          `Analisis ${ticker} (${totalScanned}/${totalMax} saham)`,
+          `Batch ${batchNum} · ${allRecs.length}/5 rekomendasi terkumpul`,
+          10 + Math.round((totalScanned / totalMax) * 80)
         );
+        addLog(`🧠 ${ticker}: analisis...`);
 
-        const m = ar.match(/\{[^{}]*\}/);
-        if (!m) return null;
-        return validateRec(JSON.parse(m[0]), ticker);
-      }
+        try {
+          let rec = null;
+          const MAX_ATTEMPTS = 3;
 
-      try {
-        let rec = null;
-        const MAX_ATTEMPTS = 3;
-
-        for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-          if (attempt > 0) {
-            addLog(`🔄 ${ticker}: retry ${attempt}/${MAX_ATTEMPTS-1} (confidence sebelumnya rendah)...`);
-            await new Promise(r => setTimeout(r, 1500));
+          for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+            if (attempt > 0) {
+              addLog(`🔄 ${ticker}: retry ${attempt}/${MAX_ATTEMPTS-1}...`);
+              await new Promise(r => setTimeout(r, 1500));
+            }
+            rec = await analyzeStock(ticker, holding, holdingCtx, attempt);
+            if (!rec) { addLog(`⚠️ ${ticker}: JSON tidak valid (attempt ${attempt+1})`); continue; }
+            if (rec.confidence !== 'low') break;
+            addLog(`➖ ${ticker}: confidence rendah (attempt ${attempt+1}/${MAX_ATTEMPTS})`);
           }
-
-          rec = await analyzeStock(ticker, holding, holdingCtx, attempt);
 
           if (!rec) {
-            addLog(`⚠️ ${ticker}: JSON tidak valid (attempt ${attempt+1})`);
-            continue;
+            addLog(`⚠️ ${ticker}: gagal, skip`);
+          } else if (rec.confidence === 'low') {
+            addLog(`❌ ${ticker}: tetap low, dilewati`);
+          } else {
+            allRecs.push(rec);
+            addLog(`✅ ${ticker} → ${rec.signal.toUpperCase()} (${rec.confidence}) — total ${allRecs.length}/5`, 'var(--green)');
           }
-
-          if (rec.confidence !== 'low') break; // dapat medium/high — stop retry
-
-          addLog(`➖ ${ticker}: confidence rendah (attempt ${attempt+1}/${MAX_ATTEMPTS})`);
+        } catch(e) {
+          addLog(`⚠️ ${ticker}: ${e.message}`);
         }
 
-        // Evaluasi hasil akhir setelah semua attempt
-        if (!rec) {
-          addLog(`⚠️ ${ticker}: semua attempt gagal, skip`);
-        } else if (rec.confidence === 'low') {
-          addLog(`❌ ${ticker}: tetap low setelah ${MAX_ATTEMPTS} attempt, dilewati`);
-        } else {
-          allRecs.push(rec);
-          addLog(`✅ ${ticker} → ${rec.signal.toUpperCase()} (${rec.confidence}) Rp ${rec.currentPrice.toLocaleString('id-ID')}`, 'var(--green)');
+        if (i < remaining.length - 1 && allRecs.length < 5) {
+          await new Promise(r => setTimeout(r, 1500));
         }
-
-      } catch(e) {
-        addLog(`⚠️ ${ticker}: ${e.message}`);
       }
-
-      if (i < candidates.length - 1) await new Promise(r => setTimeout(r, 1500));
     }
+
+    // Jalankan batch 1, lalu batch 2 jika perlu, lalu batch 3 jika masih kurang
+    await analyzeBatch(batch1, 1);
+    if (allRecs.length < 5 && batch2.length) {
+      addLog(`\n⚡ Batch 1 selesai (${allRecs.length}/5) — lanjut ke Batch 2...`);
+      await new Promise(r => setTimeout(r, 1000));
+      await analyzeBatch(batch2, 2);
+    }
+    if (allRecs.length < 5 && batch3.length) {
+      addLog(`\n⚡ Batch 2 selesai (${allRecs.length}/5) — lanjut ke Batch 3...`);
+      await new Promise(r => setTimeout(r, 1000));
+      await analyzeBatch(batch3, 3);
+    }
+
+    addLog(`\n📊 Scan selesai: ${scanned.size} saham dipindai, ${allRecs.length} lolos threshold`);
 
     // ── FASE 3: Ringkasan pasar (llama, cepat) ──
     if (allRecs.length > 0) {
-      addLog('📋 Ringkasan pasar...');
+      addLog('📋 Menyusun ringkasan pasar...');
       try {
-        const sp = `IDX ${todayShort}. Saham dianalisis: ${allRecs.map(r=>`${r.ticker}:${r.signal}`).join(',')}. IHSG ~${ihsg||6200}.
+        const sp = `IDX ${todayShort}. Saham: ${allRecs.map(r=>`${r.ticker}:${r.signal}`).join(',')}. IHSG ~${ihsg||6200}.
 JSON saja: {"marketCondition":"bullish|neutral|bearish","marketComment":"1 kalimat kondisi pasar Bahasa Indonesia","ihsg":${ihsg||6200},"ihsgChange":0.0,"selfNote":"1 kalimat evaluasi sinyal AI"}`;
         const sr = await callGroq(
           [{ role: 'user', content: sp }],
@@ -859,6 +899,7 @@ JSON saja: {"marketCondition":"bullish|neutral|bearish","marketComment":"1 kalim
         }
       } catch(e) { /* non-critical */ }
     }
+
 
     clearInterval(countdownInterval);
     setLoading('Selesai!', 'Rekomendasi siap', 100);

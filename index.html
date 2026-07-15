@@ -352,13 +352,21 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
     <span class="section-label">Changelog</span>
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r);overflow:hidden">
       <div style="padding:12px 14px;border-bottom:1px solid var(--border)">
-        <div style="font-family:var(--font-head);font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">v2.6 — 3-batch scanning (max 15 saham) <span style="font-size:10px;font-weight:400;color:var(--text3);font-family:var(--font-mono)">saat ini</span></div>
+        <div style="font-family:var(--font-head);font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">v2.7 — Smart scoring + 2 attempt <span style="font-size:10px;font-weight:400;color:var(--text3);font-family:var(--font-mono)">saat ini</span></div>
         <div style="font-size:11px;color:var(--text2);line-height:1.7">
-          • Fase 1 filter 15 kandidat sekaligus dibagi 3 batch prioritas (5+5+5)<br>
+          • Fase 1 tidak pakai AI — murni rule-based scoring dari data lokal<br>
+          • A1: portofolio user +40 · A2: belum dianalisis 3hr+ +25 · A3: maks 2 saham/sektor di batch 1<br>
+          • B1: win rate track record +0–30 · B2: belum pernah dianalisis +10 · B3: baru kemarin -20<br>
+          • Attempt per saham dikurangi 3 → 2 (lebih efisien, hemat token)<br>
+          • Log menampilkan skor top 8 kandidat secara transparan
+        </div>
+      </div>
+      <div style="padding:12px 14px;border-bottom:1px solid var(--border)">
+        <div style="font-family:var(--font-head);font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">v2.6 — 3-batch scanning (max 15 saham)</div>
+        <div style="font-size:11px;color:var(--text2);line-height:1.7">
+          • Fase 1 filter 15 kandidat dibagi 3 batch prioritas (5+5+5)<br>
           • Batch 2 dan 3 hanya dijalankan jika batch sebelumnya belum dapat 5 rekomendasi<br>
-          • Stop otomatis saat sudah dapat 5 rekomendasi medium/high confidence<br>
-          • Retry per angle tetap ada: teknikal → fundamental jika masih low<br>
-          • Log real-time menampilkan batch mana yang sedang berjalan
+          • Stop otomatis saat sudah dapat 5 rekomendasi medium/high confidence
         </div>
       </div>
       <div style="padding:12px 14px;border-bottom:1px solid var(--border)">
@@ -657,6 +665,7 @@ async function callGroq(messages, apiKey, {
 // ═══════════════════════════════════════════════════════
 // MAIN ANALYSIS — 2-PHASE SYSTEM
 // ═══════════════════════════════════════════════════════
+// ── SEKTOR per saham untuk diversifikasi scoring ──
 const IDX_WATCHLIST = [
   'BBCA','BBRI','BMRI','BNGA','BBNI',
   'TLKM','GOTO','EXCL',
@@ -664,6 +673,102 @@ const IDX_WATCHLIST = [
   'ADRO','PTBA','INCO','ANTM',
   'KLBF','SMGR','CTRA','JSMR'
 ];
+
+const STOCK_META = {
+  BBCA:{sector:'Banking'},   BBRI:{sector:'Banking'},   BMRI:{sector:'Banking'},
+  BNGA:{sector:'Banking'},   BBNI:{sector:'Banking'},
+  TLKM:{sector:'Telco'},     GOTO:{sector:'Tech'},       EXCL:{sector:'Telco'},
+  ASII:{sector:'Auto'},      UNVR:{sector:'Consumer'},   ICBP:{sector:'Consumer'},
+  INDF:{sector:'Consumer'},  ADRO:{sector:'Mining'},     PTBA:{sector:'Mining'},
+  INCO:{sector:'Mining'},    ANTM:{sector:'Mining'},     KLBF:{sector:'Health'},
+  SMGR:{sector:'Cement'},    CTRA:{sector:'Property'},   JSMR:{sector:'Infra'}
+};
+
+// ── SCORING FUNCTION: Opsi A + B ──────────────────────
+// Murni dari data lokal, tidak butuh API tambahan
+function scoreAndSelectCandidates(holdingTickers) {
+  const now = Date.now();
+  const DAY = 86400000;
+
+  // Kumpulkan semua saham yang akan di-score
+  // Holdings user selalu diikutkan
+  const universe = [...new Set([...holdingTickers, ...IDX_WATCHLIST])];
+
+  // Hitung stats dari track record per saham
+  const stockStats = {};
+  (state.trackRecord || []).forEach(r => {
+    const age = (now - r.timestamp) / DAY;
+    if (age > 90) return;
+    if (!stockStats[r.ticker]) stockStats[r.ticker] = {
+      wins: 0, total: 0, lastAnalyzed: 0
+    };
+    const st = stockStats[r.ticker];
+    if (r.outcome === 'win') st.wins++;
+    if (r.outcome !== null) st.total++;
+    if (r.timestamp > st.lastAnalyzed) st.lastAnalyzed = r.timestamp;
+  });
+
+  // Score setiap saham
+  const scored = universe.map(ticker => {
+    let score = 0;
+    const st = stockStats[ticker] || { wins: 0, total: 0, lastAnalyzed: 0 };
+
+    // A1: Saham di portofolio user → prioritas tertinggi (+40)
+    if (holdingTickers.includes(ticker)) score += 40;
+
+    // A2: Belum dianalisis dalam 3 hari → fresh candidate (+25)
+    const daysSinceLast = st.lastAnalyzed ? (now - st.lastAnalyzed) / DAY : 999;
+    if (daysSinceLast > 3) score += 25;
+    else if (daysSinceLast > 1) score += 10;
+
+    // A3: Rotasi sektor — spread agar tidak semua banking/mining
+    // (ini diterapkan saat split batch, bukan di score individual)
+
+    // B1: Win rate historis di track record (+0 to +30)
+    if (st.total >= 2) {
+      const winRate = st.wins / st.total;
+      score += Math.round(winRate * 30);
+    } else {
+      score += 15; // belum ada data → netral
+    }
+
+    // B2: Bonus jika belum pernah dianalisis sama sekali (+10)
+    if (st.total === 0) score += 10;
+
+    // B3: Kecilkan score jika baru dianalisis kemarin (hindari ulang terlalu cepat)
+    if (daysSinceLast < 1) score -= 20;
+
+    return { ticker, score, sector: (STOCK_META[ticker] || {}).sector || 'Other',
+             winRate: st.total > 0 ? st.wins/st.total : null,
+             lastAnalyzed: st.lastAnalyzed, isHolding: holdingTickers.includes(ticker) };
+  });
+
+  // Sort by score descending
+  scored.sort((a, b) => b.score - a.score);
+
+  // Split menjadi 3 batch dengan diversifikasi sektor
+  // Batch 1: top 5, pastikan maks 2 saham dari sektor yang sama
+  const batch1 = [], batch2 = [], batch3 = [];
+  const sectorCount = {};
+
+  for (const s of scored) {
+    const inB1Already = batch1.length;
+    const sec = s.sector;
+    sectorCount[sec] = sectorCount[sec] || 0;
+
+    if (batch1.length < 5 && sectorCount[sec] < 2) {
+      batch1.push(s.ticker);
+      sectorCount[sec]++;
+    } else if (batch2.length < 5) {
+      batch2.push(s.ticker);
+    } else if (batch3.length < 5) {
+      batch3.push(s.ticker);
+    }
+    if (batch1.length === 5 && batch2.length === 5 && batch3.length === 5) break;
+  }
+
+  return { batch1, batch2, batch3, scored };
+}
 
 // ─── helper: update loading UI ───────────────────────
 function setLoading(label, sub, pct) {
@@ -729,36 +834,24 @@ async function runAnalysis() {
   }, 5000);
 
   try {
-    // ── FASE 1: Filter 15 kandidat sekaligus dibagi 3 batch ──
-    setLoading('Fase 1 — Filter kandidat...', 'AI memilih 15 kandidat dari watchlist', 10);
-    addLog('🔎 Fase 1: memilih 15 kandidat (3 batch x 5)...');
+    // ── FASE 1: Score & filter 15 kandidat (Opsi A+B, tanpa AI) ──
+    setLoading('Fase 1 — Scoring kandidat...', 'Menghitung skor saham dari track record & aturan', 10);
+    addLog('🔎 Fase 1: scoring kandidat (rule-based + track record)...');
 
-    const watchlist = [...new Set([...holdingTickers, ...IDX_WATCHLIST])].slice(0, 24);
-    const perfSigs = Object.entries(getWeightedPerf().signalAccuracy)
-      .sort((a,b) => b[1]-a[1]).slice(0,3).map(([k,v]) => `${k}(${v}%)`).join(',') || 'RSI,MACD,Fundamental';
+    const { batch1, batch2, batch3, scored } = scoreAndSelectCandidates(holdingTickers);
+    if (!batch1.length) throw new Error('Tidak ada kandidat tersedia.');
 
-    // Minta AI pilih 15 kandidat sekaligus, dibagi 3 batch prioritas
-    const p1Prompt = `Analis IDX. ${today}. Watchlist: ${watchlist.join(',')}.
-Portofolio user: ${holdingTickers.join(',') || 'kosong'}. Sinyal terbaik historis: ${perfSigs}.
-Pilih 15 saham terbaik dari watchlist, dibagi 3 batch prioritas (masing-masing 5 saham):
-- batch1: 5 saham paling menarik hari ini (highest conviction)
-- batch2: 5 saham cadangan jika batch1 tidak cukup sinyal kuat
-- batch3: 5 saham terakhir jika masih kurang
-Sertakan saham portofolio user di batch1 jika ada potensi.
-JSON saja: {"batch1":["A","B","C","D","E"],"batch2":["F","G","H","I","J"],"batch3":["K","L","M","N","O"],"marketSentiment":"bullish|neutral|bearish","ihsgEst":6200}`;
+    // Log top scores untuk transparansi
+    scored.slice(0, 8).forEach(s => {
+      const wr = s.winRate !== null ? ` · win ${Math.round(s.winRate*100)}%` : ' · baru';
+      const hold = s.isHolding ? ' 💼' : '';
+      addLog(`  ${s.ticker}${hold} → skor ${s.score} (${s.sector}${wr})`);
+    });
 
-    const p1Raw = await callGroq(
-      [{ role: 'user', content: p1Prompt }],
-      apiKey,
-      { model: MODELS.filter, maxTokens: 150, temperature: 0.1, retries: 3, onLog }
-    );
-    const p1Match = p1Raw.match(/\{[\s\S]*?\}/);
-    if (!p1Match) throw new Error('Fase 1 gagal. Coba lagi.');
-    const phase1 = JSON.parse(p1Match[0]);
-    const batch1 = (phase1.batch1 || []).slice(0, 5);
-    const batch2 = (phase1.batch2 || []).slice(0, 5);
-    const batch3 = (phase1.batch3 || []).slice(0, 5);
-    if (!batch1.length) throw new Error('Tidak ada kandidat terpilih.');
+    addLog(`✅ Batch 1: ${batch1.join(', ')}`, 'var(--green)');
+    if (batch2.length) addLog(`📋 Batch 2: ${batch2.join(', ')}`);
+    if (batch3.length) addLog(`📋 Batch 3: ${batch3.join(', ')}`);
+    await new Promise(r => setTimeout(r, 500));
 
     addLog(`✅ Batch 1: ${batch1.join(', ')}`, 'var(--green)');
     addLog(`📋 Batch 2: ${batch2.join(', ')}`);
@@ -768,16 +861,15 @@ JSON saja: {"batch1":["A","B","C","D","E"],"batch2":["F","G","H","I","J"],"batch
     // ── FASE 2: Analisis batch per batch, stop saat dapat 5 rekomendasi ──
     const allRecs = [];
     const scanned = new Set();
-    let marketCondition = phase1.marketSentiment || 'neutral';
+    let marketCondition = 'neutral';
     let marketComment = '', selfNote = '';
-    let ihsg = phase1.ihsgEst || null, ihsgChange = null;
+    let ihsg = null, ihsgChange = null;
 
     // Helper: analisis satu saham dengan retry per angle
     async function analyzeStock(ticker, holding, holdingCtx, attempt) {
       const angles = [
         `Analisis saham ${ticker} (IDX) berdasarkan kondisi terkini: fundamental, teknikal, dan sentimen sektor.`,
-        `Fokus pada momentum teknikal ${ticker}: RSI, MACD, volume, dan price action terkini. Apakah ada setup trading yang valid?`,
-        `Fokus pada nilai fundamental ${ticker}: valuasi vs sektor, pertumbuhan laba, dividen, dan katalis jangka menengah.`
+        `Fokus berbeda: bandingkan valuasi ${ticker} vs rata-rata sektornya, momentum harga 1 bulan terakhir, dan apakah ada katalis jangka pendek yang mendukung sinyal kuat.`
       ];
       const angle = angles[Math.min(attempt, angles.length - 1)];
       const retryNote = attempt > 0
@@ -831,7 +923,7 @@ JSON satu baris tanpa markdown:
 
         try {
           let rec = null;
-          const MAX_ATTEMPTS = 3;
+          const MAX_ATTEMPTS = 2;
 
           for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
             if (attempt > 0) {

@@ -265,10 +265,50 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
   <div id="holdings" class="panel">
     <div style="display:flex;justify-content:space-between;align-items:center">
       <span class="section-label">Portofolio Saya</span>
-      <span id="total-pnl" style="font-family:var(--font-mono);font-size:13px;font-weight:500"></span>
+      <button onclick="clearHoldings()" style="font-size:10px;color:var(--text3);background:none;border:none;cursor:pointer;font-family:var(--font-mono)">Hapus semua</button>
     </div>
+
+    <!-- SUMMARY CARD -->
+    <div id="portfolio-summary" style="display:none;background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:14px">
+      <div style="font-family:var(--font-head);font-size:10px;font-weight:700;color:var(--text3);letter-spacing:.1em;text-transform:uppercase;margin-bottom:10px">Ringkasan Portofolio</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
+        <div style="background:var(--bg3);border-radius:var(--r-sm);padding:10px">
+          <div style="font-size:10px;color:var(--text3);margin-bottom:3px">Total Nilai Pasar</div>
+          <div id="sum-market-value" style="font-family:var(--font-mono);font-size:15px;font-weight:500;color:var(--text)">—</div>
+        </div>
+        <div style="background:var(--bg3);border-radius:var(--r-sm);padding:10px">
+          <div style="font-size:10px;color:var(--text3);margin-bottom:3px">Total Modal</div>
+          <div id="sum-cost-basis" style="font-family:var(--font-mono);font-size:15px;font-weight:500;color:var(--text)">—</div>
+        </div>
+        <div style="background:var(--bg3);border-radius:var(--r-sm);padding:10px">
+          <div style="font-size:10px;color:var(--text3);margin-bottom:3px">Unrealized P&L</div>
+          <div id="sum-total-pnl" style="font-family:var(--font-mono);font-size:15px;font-weight:500">—</div>
+        </div>
+        <div style="background:var(--bg3);border-radius:var(--r-sm);padding:10px">
+          <div style="font-size:10px;color:var(--text3);margin-bottom:3px">Return</div>
+          <div id="sum-return-pct" style="font-family:var(--font-mono);font-size:15px;font-weight:500">—</div>
+        </div>
+      </div>
+      <!-- Breakdown per status -->
+      <div style="display:flex;gap:8px;flex-wrap:wrap" id="sum-breakdown"></div>
+    </div>
+
     <div id="holdings-list"></div>
     <button class="add-holding-btn" onclick="openAddHolding()">+ Tambah Saham</button>
+
+    <!-- EXPORT / IMPORT -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+      <button class="act-btn" onclick="exportHoldings()" style="padding:11px;font-size:12px">
+        📤 Export Portofolio
+      </button>
+      <button class="act-btn" onclick="document.getElementById('import-file').click()" style="padding:11px;font-size:12px">
+        📥 Import Portofolio
+      </button>
+    </div>
+    <input type="file" id="import-file" accept=".json" style="display:none" onchange="importHoldings(event)">
+    <div style="font-size:10px;color:var(--text3);text-align:center;font-family:var(--font-mono)">
+      Simpan file export sebagai backup — bisa di-import ulang kapanpun
+    </div>
   </div>
 
   <!-- TRACK RECORD -->
@@ -470,28 +510,197 @@ let state = {
 // ═══════════════════════════════════════════════════════
 // PERSISTENCE
 // ═══════════════════════════════════════════════════════
-function saveState() {
-  try { localStorage.setItem('idx_v4', JSON.stringify(state)); } catch(e) {}
+// Storage keys — holdings disimpan TERPISAH supaya tidak hilang saat versi update
+const STORAGE_HOLDINGS = 'idx_holdings_v1';   // JANGAN GANTI KEY INI
+const STORAGE_STATE    = 'idx_state_v7';       // boleh ganti saat versi baru
+const STORAGE_SETTINGS = 'idx_settings_v1';   // JANGAN GANTI KEY INI
+
+function saveHoldings() {
+  // Holdings disimpan di key terpisah yang tidak pernah di-clear saat update
+  try { localStorage.setItem(STORAGE_HOLDINGS, JSON.stringify(state.holdings)); } catch(e) {}
 }
-function loadState() {
+
+function saveState() {
   try {
-    const keys = ['idx_v4','idx_v3','idx_signals_v2','idx_signals_state'];
-    for (const k of keys) {
-      const r = localStorage.getItem(k);
-      if (r) { const s = JSON.parse(r); state = {...state, ...s}; break; }
-    }
+    // Simpan state utama (recommendations, trackRecord, lastAnalysis)
+    const toSave = {
+      recommendations: state.recommendations,
+      trackRecord:      state.trackRecord,
+      lastAnalysis:     state.lastAnalysis,
+      marketData:       state.marketData
+    };
+    localStorage.setItem(STORAGE_STATE, JSON.stringify(toSave));
+    // Settings & holdings selalu disimpan terpisah
+    localStorage.setItem(STORAGE_SETTINGS, JSON.stringify(state.settings));
+    saveHoldings();
   } catch(e) {}
 }
+
+function loadState() {
+  try {
+    // 1. Load holdings dari key permanen (tidak pernah hilang)
+    const h = localStorage.getItem(STORAGE_HOLDINGS);
+    if (h) state.holdings = JSON.parse(h);
+
+    // 2. Migrate holdings dari versi lama jika ada
+    if (!state.holdings.length) {
+      const oldKeys = ['idx_v4','idx_v3','idx_signals_v2','idx_signals_state'];
+      for (const k of oldKeys) {
+        const old = localStorage.getItem(k);
+        if (old) {
+          const parsed = JSON.parse(old);
+          if (parsed.holdings?.length) {
+            state.holdings = parsed.holdings;
+            saveHoldings(); // migrate ke key baru
+            break;
+          }
+        }
+      }
+    }
+
+    // 3. Load settings dari key permanen
+    const s = localStorage.getItem(STORAGE_SETTINGS);
+    if (s) state.settings = { ...state.settings, ...JSON.parse(s) };
+
+    // 4. Load state utama (recommendations, trackRecord, dll)
+    const main = localStorage.getItem(STORAGE_STATE);
+    if (main) {
+      const parsed = JSON.parse(main);
+      if (parsed.recommendations) state.recommendations = parsed.recommendations;
+      if (parsed.trackRecord)     state.trackRecord     = parsed.trackRecord;
+      if (parsed.lastAnalysis)    state.lastAnalysis    = parsed.lastAnalysis;
+      if (parsed.marketData)      state.marketData      = parsed.marketData;
+    }
+  } catch(e) { console.warn('loadState error:', e); }
+}
+
 function saveSettings() {
-  state.settings.apiKey = document.getElementById('api-key-input').value.trim();
+  state.settings.apiKey       = document.getElementById('api-key-input').value.trim();
   state.settings.portfolioSize = document.getElementById('portfolio-size').value;
   saveState();
 }
+
 function clearAllData() {
-  if (confirm('Reset semua data termasuk portofolio dan track record?')) {
-    localStorage.clear(); location.reload();
+  if (confirm('Reset semua data analisis dan track record?\n\n⚠️ PORTOFOLIO SAHAM KAMU TIDAK AKAN DIHAPUS.')) {
+    localStorage.removeItem(STORAGE_STATE);
+    state.recommendations = [];
+    state.trackRecord     = [];
+    state.lastAnalysis    = null;
+    state.marketData      = {};
+    saveState();
+    location.reload();
   }
 }
+
+function clearHoldings() {
+  if (confirm('Hapus SEMUA saham dari portofolio? Ini tidak bisa dibatalkan.')) {
+    state.holdings = [];
+    saveHoldings();
+    renderHoldings();
+  }
+}
+
+function exportHoldings() {
+  if (!state.holdings.length) { alert('Portofolio kosong — tidak ada yang di-export.'); return; }
+
+  const exportData = {
+    version: '1.0',
+    exportedAt: new Date().toISOString(),
+    exportedAtWIB: new Date().toLocaleString('id-ID', {timeZone:'Asia/Jakarta'}),
+    holdings: state.holdings,
+    totalStocks: state.holdings.length,
+    totalLots: state.holdings.reduce((s,h) => s + h.lots, 0)
+  };
+
+  const json = JSON.stringify(exportData, null, 2);
+  const blob = new Blob([json], {type: 'application/json'});
+  const url = URL.createObjectURL(blob);
+
+  const date = new Date().toLocaleDateString('id-ID', {timeZone:'Asia/Jakarta'})
+    .replace(/\//g,'-');
+  const filename = `idx_portfolio_${date}.json`;
+
+  // iPhone Safari: create link and click
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+
+  // Show confirmation
+  setTimeout(() => {
+    alert(`✅ Export berhasil!\n\nFile: ${filename}\n${state.holdings.length} saham · ${exportData.totalLots} lot total\n\nSimpan file ini di tempat aman (iCloud, Google Drive, atau Files).`);
+  }, 500);
+}
+
+function importHoldings(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      const data = JSON.parse(e.target.result);
+
+      // Validate format
+      if (!data.holdings || !Array.isArray(data.holdings)) {
+        alert('❌ File tidak valid. Pastikan file adalah hasil export dari IDX Signals.');
+        return;
+      }
+
+      // Validate each holding
+      const valid = data.holdings.filter(h =>
+        h.ticker && typeof h.ticker === 'string' &&
+        h.lots > 0 && h.avgPrice > 0
+      );
+
+      if (!valid.length) {
+        alert('❌ Tidak ada data portofolio valid dalam file ini.');
+        return;
+      }
+
+      // Confirm before overwrite
+      const msg = state.holdings.length > 0
+        ? `Import akan MENGGABUNGKAN ${valid.length} saham dari file dengan portofolio kamu yang ada (${state.holdings.length} saham).\n\nSaham yang sama akan diupdate dengan data dari file.\n\nLanjutkan?`
+        : `Import ${valid.length} saham dari file:\n${valid.map(h => `• ${h.ticker}: ${h.lots} lot @ Rp ${h.avgPrice.toLocaleString('id-ID')}`).join('\n')}\n\nLanjutkan?`;
+
+      if (!confirm(msg)) return;
+
+      // Merge: file data wins for duplicate tickers
+      const merged = [...state.holdings];
+      valid.forEach(imported => {
+        const idx = merged.findIndex(h => h.ticker === imported.ticker.toUpperCase());
+        const clean = {
+          ticker:   imported.ticker.toUpperCase(),
+          lots:     parseInt(imported.lots),
+          avgPrice: parseInt(imported.avgPrice),
+          addedAt:  imported.addedAt || Date.now()
+        };
+        if (idx >= 0) merged[idx] = clean;
+        else merged.push(clean);
+      });
+
+      state.holdings = merged;
+      saveHoldings();
+      renderHoldings();
+
+      // Reset file input
+      event.target.value = '';
+
+      const exportedAt = data.exportedAtWIB || data.exportedAt || 'tidak diketahui';
+      alert(`✅ Import berhasil!\n\n${valid.length} saham diimport\nDiexport pada: ${exportedAt}\n\nTotal portofolio: ${state.holdings.length} saham`);
+
+    } catch(err) {
+      alert(`❌ Gagal membaca file: ${err.message}`);
+      event.target.value = '';
+    }
+  };
+  reader.readAsText(file);
+}
+
+
 
 // ═══════════════════════════════════════════════════════
 // NAVIGATION
@@ -1255,14 +1464,14 @@ function addHolding() {
   const lots = parseInt(document.getElementById('input-lots').value);
   const avgPrice = parseInt(document.getElementById('input-price').value);
   if (!ticker||!lots||!avgPrice) { alert('Isi semua field.'); return; }
-  state.holdings = state.holdings.filter(h=>h.ticker!==ticker);
-  state.holdings.push({ticker,lots,avgPrice,addedAt:Date.now()});
-  saveState(); closeModalDirect(); renderHoldings();
+  state.holdings = state.holdings.filter(h => h.ticker !== ticker);
+  state.holdings.push({ticker, lots, avgPrice, addedAt: Date.now()});
+  saveState(); saveHoldings(); closeModalDirect(); renderHoldings();
 }
 function removeHolding(ticker) {
   if (!confirm(`Hapus ${ticker}?`)) return;
-  state.holdings = state.holdings.filter(h=>h.ticker!==ticker);
-  saveState(); renderHoldings();
+  state.holdings = state.holdings.filter(h => h.ticker !== ticker);
+  saveState(); saveHoldings(); renderHoldings();
 }
 function addToHoldingFromRec(ticker, price) {
   document.getElementById('input-ticker').value = ticker;
@@ -1277,12 +1486,116 @@ function copyAlert(ticker, tp, sl) {
 
 function renderHoldings() {
   const el = document.getElementById('holdings-list');
+  const summaryEl = document.getElementById('portfolio-summary');
+
   if (!state.holdings.length) {
     el.innerHTML = `<div class="empty-state"><div class="empty-icon">💼</div><div class="empty-title">Portofolio kosong</div><div class="empty-body">Tambahkan saham yang kamu miliki untuk tracking P&L dan rekomendasi personal.</div></div>`;
-    document.getElementById('total-pnl').textContent = '';
+    if (summaryEl) summaryEl.style.display = 'none';
     return;
   }
-  const recMap={};
+
+  const recMap = {};
+  state.recommendations.forEach(r => { recMap[r.ticker] = r; });
+
+  // ── Hitung semua angka untuk summary ──
+  let totalMarketValue = 0, totalCostBasis = 0, totalPnl = 0;
+  let countBuy = 0, countHold = 0, countSell = 0, countSLBreached = 0;
+
+  const holdingData = state.holdings.map(h => {
+    const rec  = recMap[h.ticker];
+    const cur  = rec?.currentPrice || h.avgPrice;
+    const cost = h.avgPrice * h.lots * 100;
+    const mktVal = cur * h.lots * 100;
+    const pnl  = mktVal - cost;
+    const pnlPct = ((cur - h.avgPrice) / h.avgPrice * 100);
+    const action = rec?.signal || 'hold';
+    const slBreached = rec?.shortTerm?.sl && cur < rec.shortTerm.sl;
+
+    totalMarketValue += mktVal;
+    totalCostBasis   += cost;
+    totalPnl         += pnl;
+    if (action === 'buy')  countBuy++;
+    if (action === 'hold') countHold++;
+    if (action === 'sell') countSell++;
+    if (slBreached) countSLBreached++;
+
+    return { h, rec, cur, pnl, pnlPct, action, slBreached };
+  });
+
+  const totalReturnPct = totalCostBasis > 0
+    ? ((totalMarketValue - totalCostBasis) / totalCostBasis * 100) : 0;
+
+  // ── Render summary card ──
+  if (summaryEl) {
+    summaryEl.style.display = 'block';
+    document.getElementById('sum-market-value').textContent = formatRp(totalMarketValue);
+    document.getElementById('sum-cost-basis').textContent   = formatRp(totalCostBasis);
+
+    const pnlEl = document.getElementById('sum-total-pnl');
+    pnlEl.textContent = (totalPnl >= 0 ? '+' : '') + formatRp(totalPnl);
+    pnlEl.className = totalPnl >= 0 ? 'pos' : 'neg';
+
+    const retEl = document.getElementById('sum-return-pct');
+    retEl.textContent = (totalReturnPct >= 0 ? '+' : '') + totalReturnPct.toFixed(2) + '%';
+    retEl.className = totalReturnPct >= 0 ? 'pos' : 'neg';
+
+    // Status breakdown pills
+    const breakdownEl = document.getElementById('sum-breakdown');
+    const pills = [];
+    if (countBuy)        pills.push(`<span style="font-size:11px;background:var(--green-bg);color:var(--green);border:1px solid var(--green-border);border-radius:20px;padding:3px 10px">Tambah ${countBuy}</span>`);
+    if (countHold)       pills.push(`<span style="font-size:11px;background:var(--amber-bg);color:var(--amber);border:1px solid var(--amber-border);border-radius:20px;padding:3px 10px">Tahan ${countHold}</span>`);
+    if (countSell)       pills.push(`<span style="font-size:11px;background:var(--red-bg);color:var(--red);border:1px solid var(--red-border);border-radius:20px;padding:3px 10px">Jual ${countSell}</span>`);
+    if (countSLBreached) pills.push(`<span style="font-size:11px;background:var(--red-bg);color:var(--red);border:1px solid var(--red-border);border-radius:20px;padding:3px 10px">⚠ SL ${countSLBreached}</span>`);
+    if (!pills.length)   pills.push(`<span style="font-size:11px;color:var(--text3)">Jalankan Analisis untuk mendapatkan rekomendasi per saham</span>`);
+    breakdownEl.innerHTML = pills.join('');
+  }
+
+  // ── Render setiap holding card ──
+  let html = '';
+  holdingData.forEach(({ h, rec, cur, pnl, pnlPct, action, slBreached }) => {
+    const aLabel = {buy:'Tambah Posisi', hold:'Tahan', sell:'Jual Sekarang'}[action] || 'Tahan';
+    const aClass = {buy:'tag-add', hold:'tag-hold', sell:'tag-exit'}[action] || 'tag-hold';
+    const pc = rec?.priceChange || 0;
+
+    html += `<div class="holding-card"${slBreached ? ' style="border-color:var(--red-border)"' : ''}>
+      <div class="holding-card-body">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px">
+          <div>
+            <div style="font-family:var(--font-head);font-size:17px;font-weight:800">${h.ticker}</div>
+            <div style="font-size:11px;color:var(--text3);margin-top:2px;font-family:var(--font-mono)">${h.lots} lot · avg Rp ${h.avgPrice.toLocaleString('id-ID')}</div>
+          </div>
+          <div style="text-align:right">
+            <span class="action-tag ${aClass}">${aLabel}</span>
+            ${slBreached ? '<div style="font-size:10px;color:var(--red);margin-top:4px">⚠ SL Tertembus</div>' : ''}
+          </div>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px">
+          <div>
+            <div style="font-family:var(--font-mono);font-size:18px;font-weight:500" class="${pnl>=0?'pos':'neg'}">${pnl>=0?'+':''}${formatRp(pnl)}</div>
+            <div style="font-size:10px;color:var(--text3)">Unrealized P&L (${pnl>=0?'+':''}${pnlPct.toFixed(1)}%)</div>
+          </div>
+          <div style="text-align:right">
+            <div style="font-family:var(--font-mono);font-size:14px;color:var(--text2)">Rp ${cur.toLocaleString('id-ID')}</div>
+            <div style="font-size:11px;font-family:var(--font-mono)" class="${pc>=0?'pos':'neg'}">${pc>=0?'+':''}${pc.toFixed(2)}%</div>
+          </div>
+        </div>
+        <div class="holding-targets">
+          <span class="ht">ST TP <span>${rec?.shortTerm?.tp ? `Rp ${rec.shortTerm.tp.toLocaleString('id-ID')}` : '—'}</span></span>
+          <span class="ht" style="color:var(--border2)">·</span>
+          <span class="ht">MT TP <span>${rec?.mediumTerm?.tp ? `Rp ${rec.mediumTerm.tp.toLocaleString('id-ID')}` : '—'}</span></span>
+          <span class="ht" style="color:var(--border2)">·</span>
+          <span class="ht">SL <span style="color:var(--red)">${rec?.shortTerm?.sl ? `Rp ${rec.shortTerm.sl.toLocaleString('id-ID')}` : '—'}</span></span>
+        </div>
+      </div>
+      <div class="card-actions">
+        <button class="act-btn" onclick="removeHolding('${h.ticker}')">Hapus</button>
+        <button class="act-btn primary" onclick="addToHoldingFromRec('${h.ticker}',${cur})">Edit</button>
+      </div>
+    </div>`;
+  });
+
+  el.innerHTML = html;
+}
   state.recommendations.forEach(r=>{recMap[r.ticker]=r;});
   let totalPnl=0, html='';
   state.holdings.forEach(h=>{
@@ -1332,13 +1645,6 @@ function renderHoldings() {
       </div>
     </div>`;
   });
-  el.innerHTML=html;
-  const tpEl=document.getElementById('total-pnl');
-  tpEl.textContent=(totalPnl>=0?'+':'')+formatRp(totalPnl);
-  tpEl.className=totalPnl>=0?'pos':'neg';
-  tpEl.style.cssText='font-family:var(--font-mono);font-size:13px;font-weight:500';
-}
-
 // ═══════════════════════════════════════════════════════
 // TRACK RECORD
 // ═══════════════════════════════════════════════════════

@@ -392,7 +392,17 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
     <span class="section-label">Changelog</span>
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r);overflow:hidden">
       <div style="padding:12px 14px;border-bottom:1px solid var(--border)">
-        <div style="font-family:var(--font-head);font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">v2.8 — Fix confidence selalu low <span style="font-size:10px;font-weight:400;color:var(--text3);font-family:var(--font-mono)">saat ini</span></div>
+        <div style="font-family:var(--font-head);font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">v2.9 — Data live Yahoo Finance + multi-proxy <span style="font-size:10px;font-weight:400;color:var(--text3);font-family:var(--font-mono)">saat ini</span></div>
+        <div style="font-size:11px;color:var(--text2);line-height:1.7">
+          • Multi-proxy fallback: allorigins → corsproxy.io → thingproxy (auto-coba sampai berhasil)<br>
+          • Validasi freshness data: reject jika lebih dari 48 jam (stale data tidak dikirim ke AI)<br>
+          • Badge data age di kartu saham: LIVE / Xj lalu / EOD / EST<br>
+          • Yahoo data disimpan di state untuk badge persistent<br>
+          • Data delay: 15 mnt saat pasar buka, EOD setelah tutup — memenuhi syarat "min 1 hari"
+        </div>
+      </div>
+      <div style="padding:12px 14px;border-bottom:1px solid var(--border)">
+        <div style="font-family:var(--font-head);font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">v2.8 — Fix confidence selalu low</div>
         <div style="font-size:11px;color:var(--text2);line-height:1.7">
           • Prompt diperkaya: anchor harga referensi per saham + definisi HIGH/MEDIUM/LOW yang eksplisit<br>
           • JSON template pakai harga nyata (bukan 0) + TP/SL otomatis ±5%/±12%<br>
@@ -734,7 +744,201 @@ function updateClock() {
 // ═══════════════════════════════════════════════════════
 // FOREX (simple free endpoint)
 // ═══════════════════════════════════════════════════════
-async function fetchUsdIdr() {
+// ═══════════════════════════════════════════════════════
+// YAHOO FINANCE — harga live IDX via allorigins proxy
+// ═══════════════════════════════════════════════════════
+// ── Yahoo Finance proxy list — dicoba berurutan sampai berhasil ──
+const YAHOO_PROXIES = [
+  // Proxy 1: allorigins (paling umum, kadang lambat)
+  url => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,
+  // Proxy 2: corsproxy.io (lebih reliable)
+  url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
+  // Proxy 3: thingproxy (backup)
+  url => `https://thingproxy.freeboard.io/fetch/${url}`,
+];
+
+async function fetchYahooRaw(url, proxyFn) {
+  const proxyUrl = proxyFn(url);
+  const res = await fetch(proxyUrl, { signal: AbortSignal.timeout(12000) });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const text = await res.text();
+  // allorigins wraps in JSON {contents:...}, others return raw
+  try {
+    const json = JSON.parse(text);
+    return json.contents ? json.contents : text;
+  } catch(e) {
+    return text; // raw response
+  }
+}
+
+async function fetchYahooData(ticker) {
+  const sym = encodeURIComponent(ticker + '.JK');
+  // Try v8 chart endpoint first (richer data), fallback to v7 quote
+  const endpoints = [
+    `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&range=120d`,
+    `https://query2.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&range=120d`,
+  ];
+
+  for (const endpoint of endpoints) {
+    for (const proxyFn of YAHOO_PROXIES) {
+      try {
+        const raw = await fetchYahooRaw(endpoint, proxyFn);
+        const data = JSON.parse(raw);
+        const result = data?.chart?.result?.[0];
+        if (!result) continue;
+
+        const meta    = result.meta;
+        const quote   = result.indicators?.quote?.[0] || {};
+        const closes  = (quote.close  || []).filter(v => v != null);
+        const volumes = (quote.volume || []).filter(v => v != null);
+
+        const curPrice  = meta.regularMarketPrice || closes[closes.length-1] || 0;
+        const prevClose = meta.previousClose || meta.chartPreviousClose || curPrice;
+        const priceChg  = prevClose
+          ? parseFloat(((curPrice-prevClose)/prevClose*100).toFixed(2)) : 0;
+        const avgVol = volumes.length
+          ? Math.round(volumes.slice(-20).reduce((a,b)=>a+b,0)/Math.min(20,volumes.length)) : 0;
+
+        // Validate data freshness — reject if older than 2 hari
+        const lastTs = meta.regularMarketTime || 0;
+        const ageHrs = lastTs ? (Date.now()/1000 - lastTs) / 3600 : 0;
+        if (lastTs && ageHrs > 48) {
+          console.warn(`${ticker}: data terlalu lama (${Math.round(ageHrs)}jam)`);
+          continue;
+        }
+
+        return {
+          ticker,
+          currentPrice:  Math.round(curPrice),
+          previousClose: Math.round(prevClose),
+          priceChange:   priceChg,
+          volume:        meta.regularMarketVolume || 0,
+          avgVolume:     avgVol,
+          marketTime:    lastTs ? new Date(lastTs*1000).toLocaleString('id-ID',{timeZone:'Asia/Jakarta'}) : null,
+          ageHrs:        Math.round(ageHrs),
+          closes, volumes,
+          dataSource:    'Yahoo Finance'
+        };
+
+      } catch(e) {
+        // Try next proxy silently
+        continue;
+      }
+    }
+  }
+
+  // All proxies failed
+  return null;
+}
+
+
+// ── Technical Indicators (calculated client-side) ──
+function calcRSI(closes, period=14) {
+  if (closes.length < period+1) return null;
+  const recent = closes.slice(-period-1);
+  let gains=0, losses=0;
+  for (let i=1; i<recent.length; i++) {
+    const d = recent[i]-recent[i-1];
+    d>0 ? gains+=d : losses+=Math.abs(d);
+  }
+  const ag=gains/period, al=losses/period;
+  if (al===0) return 100;
+  return Math.round(100-(100/(1+ag/al)));
+}
+
+function calcEMA(closes, period) {
+  if (closes.length < period) return null;
+  const k = 2/(period+1);
+  let ema = closes.slice(0,period).reduce((a,b)=>a+b,0)/period;
+  for (let i=period; i<closes.length; i++) ema = closes[i]*k + ema*(1-k);
+  return Math.round(ema);
+}
+
+function calcMACD(closes) {
+  if (closes.length < 26) return null;
+  const e12=calcEMA(closes,12), e26=calcEMA(closes,26);
+  if (!e12||!e26) return null;
+  const macd=e12-e26;
+  // Approximate signal (9-day EMA of MACD)
+  const macdVals = [];
+  for (let i=26; i<=closes.length; i++) {
+    const s=closes.slice(0,i);
+    const m12=calcEMA(s,12), m26=calcEMA(s,26);
+    if (m12&&m26) macdVals.push(m12-m26);
+  }
+  const signal = macdVals.length>=9 ? calcEMA(macdVals,9) : null;
+  return {
+    macd:      Math.round(macd),
+    signal:    signal ? Math.round(signal) : null,
+    histogram: signal ? Math.round(macd-signal) : null,
+    trend:     macd>0 ? 'bullish' : 'bearish',
+    crossover: signal ? (macd>signal ? 'bullish_cross' : 'bearish_cross') : null
+  };
+}
+
+function calcMA(closes, period) {
+  if (closes.length<period) return null;
+  return Math.round(closes.slice(-period).reduce((a,b)=>a+b,0)/period);
+}
+
+function buildTechnicals(data) {
+  if (!data?.closes?.length || data.closes.length < 10) return null;
+  const c  = data.closes;
+  const rsi = calcRSI(c);
+  const macd= calcMACD(c);
+  const ma20= calcMA(c,20);
+  const ma50= calcMA(c, Math.min(50,c.length));
+  const ma5 = calcMA(c,5);
+  const cur = data.currentPrice;
+
+  // Support & resistance from last 20 days
+  const recent20 = c.slice(-20);
+  const support   = Math.round(Math.min(...recent20));
+  const resistance= Math.round(Math.max(...recent20));
+
+  // Volume signal
+  const volRatio = data.volume && data.avgVolume && data.avgVolume>0
+    ? parseFloat((data.volume/data.avgVolume).toFixed(1)) : null;
+
+  // Price position
+  const pctFromMA20 = ma20 ? parseFloat(((cur-ma20)/ma20*100).toFixed(1)) : null;
+  const pctFromSupport  = support  ? parseFloat(((cur-support)/support*100).toFixed(1)) : null;
+  const pctFromResist   = resistance? parseFloat(((resistance-cur)/resistance*100).toFixed(1)) : null;
+
+  return {
+    rsi, macd, ma5, ma20, ma50, support, resistance,
+    volRatio, pctFromMA20, pctFromSupport, pctFromResist,
+    rsiSignal: rsi ? (rsi<30?'oversold':rsi>70?'overbought':'neutral') : null,
+    priceVsMA20: ma20 ? (cur>ma20?'above':'below') : null,
+    priceVsMA50: ma50 ? (cur>ma50?'above':'below') : null,
+    volSignal:  volRatio ? (volRatio>1.5?'high volume':volRatio<0.7?'low volume':'normal') : null
+  };
+}
+
+// Format technicals as compact text for AI prompt
+function formatTechnicalsForPrompt(ticker, data, tech) {
+  if (!data && !tech) return `${ticker}: data tidak tersedia`;
+  const lines = [];
+  if (data) {
+    const age = data.ageHrs !== undefined
+      ? (data.ageHrs < 1 ? '~realtime' : `${data.ageHrs}jam lalu`)
+      : 'waktu tidak diketahui';
+    lines.push(`Harga: Rp ${data.currentPrice.toLocaleString('id-ID')} (${data.priceChange>=0?'+':''}${data.priceChange}%) [${age}]`);
+    if (data.volume && data.avgVolume)
+      lines.push(`Volume: ${(data.volume/1e6).toFixed(1)}M (rata2 ${(data.avgVolume/1e6).toFixed(1)}M, ratio ${tech?.volRatio||'?'}x)`);
+  }
+  if (tech) {
+    if (tech.rsi)        lines.push(`RSI(14): ${tech.rsi} → ${tech.rsiSignal}`);
+    if (tech.macd)       lines.push(`MACD: ${tech.macd.trend}, histogram ${tech.macd.histogram>=0?'+':''}${tech.macd.histogram}`);
+    if (tech.ma20)       lines.push(`MA20: Rp ${tech.ma20.toLocaleString('id-ID')} (harga ${tech.priceVsMA20}, ${tech.pctFromMA20}%)`);
+    if (tech.ma50)       lines.push(`MA50: Rp ${tech.ma50.toLocaleString('id-ID')} (harga ${tech.priceVsMA50})`);
+    if (tech.support)    lines.push(`Support 20hr: Rp ${tech.support.toLocaleString('id-ID')} (+${tech.pctFromSupport}%)`);
+    if (tech.resistance) lines.push(`Resistance 20hr: Rp ${tech.resistance.toLocaleString('id-ID')} (-${tech.pctFromResist}%)`);
+  }
+  return lines.join('\n');
+}
+
+
   try {
     const r = await fetch('https://api.exchangerate-api.com/v4/latest/USD', {signal: AbortSignal.timeout(5000)});
     const d = await r.json();
@@ -1060,6 +1264,27 @@ async function runAnalysis() {
     addLog(`✅ Batch 1: ${batch1.join(', ')}`, 'var(--green)');
     if (batch2.length) addLog(`📋 Batch 2: ${batch2.join(', ')}`);
     if (batch3.length) addLog(`📋 Batch 3: ${batch3.join(', ')}`);
+
+    // ── Pre-fetch Yahoo Finance data untuk semua kandidat secara paralel ──
+    const allCandidates = [...new Set([...batch1,...batch2,...batch3])];
+    addLog(`📡 Mengambil data live Yahoo Finance untuk ${allCandidates.length} saham...`);
+    setLoading('Mengambil data live...', `Yahoo Finance: ${allCandidates.join(', ')}`, 15);
+
+    const yahooResults = await Promise.allSettled(
+      allCandidates.map(t => fetchYahooData(t))
+    );
+    const yahooMap = {};
+    const techMap  = {};
+    let liveCount  = 0;
+    yahooResults.forEach((res, i) => {
+      const t = allCandidates[i];
+      if (res.status === 'fulfilled' && res.value) {
+        yahooMap[t] = res.value;
+        techMap[t]  = buildTechnicals(res.value);
+        liveCount++;
+      }
+    });
+    addLog(`✅ Data live: ${liveCount}/${allCandidates.length} saham berhasil`, liveCount>0?'var(--green)':null);
     await new Promise(r => setTimeout(r, 500));
 
     addLog(`✅ Batch 1: ${batch1.join(', ')}`, 'var(--green)');
@@ -1075,163 +1300,149 @@ async function runAnalysis() {
     let ihsg = null, ihsgChange = null;
 
     // Helper: analisis satu saham dengan retry per angle
-    async function analyzeStock(ticker, holding, holdingCtx, attempt) {
+    async function analyzeStock(ticker, holding, holdingCtx, attempt, yahooData, techData) {
 
-      // Ambil harga referensi dari IDX yang AI ketahui (approximate)
-      // Ini memberi AI anchor harga sehingga bisa hitung TP/SL yang masuk akal
+      // Use live Yahoo data if available, else fall back to known prices
       const knownPrices = {
-        BBCA:9400, BBRI:4200, BMRI:5800, BNGA:1500, BBNI:4500,
-        TLKM:2800, GOTO:52,   EXCL:2100,
-        ASII:4500, UNVR:2500, ICBP:10200, INDF:6800,
-        ADRO:2200, PTBA:2600, INCO:3400, ANTM:1400,
-        KLBF:1500, SMGR:4200, CTRA:1100, JSMR:4400
+        BBCA:9400,BBRI:4200,BMRI:5800,BNGA:1500,BBNI:4500,
+        TLKM:2800,GOTO:52,EXCL:2100,ASII:4500,UNVR:2500,
+        ICBP:10200,INDF:6800,ADRO:2200,PTBA:2600,INCO:3400,
+        ANTM:1400,KLBF:1500,SMGR:4200,CTRA:1100,JSMR:4400
       };
-      const refPrice = holding?.avgPrice || knownPrices[ticker] || 1000;
+      const hasLive   = !!yahooData;
+      const livePrice = yahooData?.currentPrice;
+      const refPrice  = livePrice || holding?.avgPrice || knownPrices[ticker] || 1000;
 
-      const angles = [
-        // Attempt 0: komprehensif dengan anchor harga
-        `Analisis LENGKAP saham ${ticker} (IDX). Harga referensi sekitar Rp ${refPrice.toLocaleString('id-ID')}.
-Pertimbangkan: (1) kondisi fundamental terkini perusahaan vs sektornya, (2) momentum teknikal 1-3 bulan terakhir, (3) sentimen pasar dan berita terbaru, (4) kondisi makro IDX saat ini.
-Berikan sinyal TEGAS (buy/hold/sell) dengan confidence MEDIUM atau HIGH. Gunakan LOW hanya jika benar-benar tidak ada sinyal sama sekali.`,
+      // Build data context — real or estimated
+      const dataCtx = hasLive
+        ? `DATA LIVE (Yahoo Finance):\n${formatTechnicalsForPrompt(ticker, yahooData, techData)}`
+        : `DATA: Harga estimasi ~Rp ${refPrice.toLocaleString('id-ID')} (data live tidak tersedia — gunakan pengetahuan terkini)`;
 
-        // Attempt 1: fokus pada satu sinyal terkuat
-        `Analisis saham ${ticker} (IDX) dari SATU sudut pandang terkuat saja.
-Harga saat ini sekitar Rp ${refPrice.toLocaleString('id-ID')}. Pilih angle yang paling kamu yakini: apakah valuasi murah/mahal, apakah momentum positif/negatif, atau apakah ada katalis jangka pendek.
-PENTING: Confidence MEDIUM berarti ada setidaknya 1 alasan kuat untuk signal ini. Jangan gunakan LOW kecuali benar-benar tidak ada sinyal sama sekali.`
-      ];
-
-      // Definisi confidence yang jelas untuk AI
+      // Confidence definition
       const confidenceDef = `
-DEFINISI CONFIDENCE (wajib ikuti):
-- HIGH: 2+ sinyal kuat sejalan (misal: valuasi murah DAN momentum naik DAN sektor bullish)
-- MEDIUM: 1 sinyal kuat yang cukup untuk rekomendasi (misal: harga di support kuat, atau P/E jauh di bawah historis)
-- LOW: tidak ada sinyal yang cukup kuat — HINDARI ini, pilih MEDIUM jika ragu`;
+DEFINISI CONFIDENCE:
+- HIGH: 2+ sinyal kuat sejalan (contoh: RSI oversold DAN harga di support DAN volume tinggi)
+- MEDIUM: 1 sinyal kuat yang meyakinkan (contoh: RSI<35, atau harga -3% dari MA20 yang kuat)
+- LOW: tidak ada sinyal jelas — HINDARI, pilih MEDIUM jika ada 1 alasan yang masuk akal`;
 
       const retryNote = attempt > 0
-        ? `\nPERCOBAAN KE-${attempt+1}: Sebelumnya menghasilkan LOW. Cari minimal 1 alasan kuat untuk MEDIUM. Ingat: MEDIUM hanya butuh 1 sinyal yang meyakinkan.`
+        ? `\nPERCOBAAN ${attempt+1}: Sebelumnya LOW. Fokus pada 1 sinyal teknikal atau fundamental yang paling kuat dari data di atas.`
         : '';
 
-      const angle = angles[Math.min(attempt, angles.length - 1)];
+      const angleCtx = attempt === 0
+        ? `Analisis komprehensif: pertimbangkan semua data di atas — teknikal (RSI, MACD, MA, support/resistance, volume) dan fundamental (valuasi, kondisi sektor, makro IDX).`
+        : `Fokus pada sinyal TERKUAT dari data teknikal di atas. Mana yang paling memberikan keyakinan untuk buy/hold/sell?`;
 
-      const ap = `Kamu adalah analis saham IDX Indonesia berpengalaman. Tanggal: ${todayShort}. BI Rate: 6.25%. USD/IDR: ${usdIdr||16000}.
+      const ap = `Kamu analis saham IDX Indonesia senior. ${todayShort}. BI Rate: 6.25%. USD/IDR: ${usdIdr||16000}.
 ${holdingCtx}
-${angle}
+SAHAM: ${ticker}
+${dataCtx}
+
+${angleCtx}
 ${confidenceDef}
 ${retryNote}
 
-Balas dengan JSON SATU BARIS, tanpa markdown, tanpa komentar:
-{"ticker":"${ticker}","companyName":"nama lengkap PT","signal":"buy|hold|sell","currentPrice":${refPrice},"priceChange":0.5,"confidence":"medium","styleTag":"Value","signals":["Fundamental","RSI"],"shortTerm":{"tp":${Math.round(refPrice*1.05)},"sl":${Math.round(refPrice*0.95)},"targetDays":7,"rr":"1:2.5"},"mediumTerm":{"tp":${Math.round(refPrice*1.12)},"sl":${Math.round(refPrice*0.93)},"targetDays":25,"rr":"1:3.0"},"reasoning":"alasan konkret 2 kalimat","alert":null,"isInPortfolio":${holding?'true':'false'}}`;
+Balas JSON SATU BARIS tanpa markdown:
+{"ticker":"${ticker}","companyName":"nama PT","signal":"buy|hold|sell","currentPrice":${refPrice},"priceChange":${yahooData?.priceChange||0.0},"confidence":"medium","styleTag":"Value|Growth|Swing","signals":["RSI","MA20"],"shortTerm":{"tp":${Math.round(refPrice*1.05)},"sl":${Math.round(refPrice*0.95)},"targetDays":7,"rr":"1:2.5"},"mediumTerm":{"tp":${Math.round(refPrice*1.12)},"sl":${Math.round(refPrice*0.93)},"targetDays":25,"rr":"1:3.0"},"reasoning":"2 kalimat konkret berdasarkan data di atas","alert":null,"isInPortfolio":${holding?'true':'false'}}`;
 
       const ar = await callGroq(
         [{ role: 'user', content: ap }],
         apiKey,
-        { model: MODELS.filter, maxTokens: 400, temperature: attempt === 0 ? 0.3 : 0.5, retries: 2, timeoutMs: 25000, onLog }
+        { model: MODELS.filter, maxTokens: 420, temperature: attempt===0 ? 0.3 : 0.5, retries: 2, timeoutMs: 25000, onLog }
       );
 
-      // Fix regex: support nested JSON (shortTerm/mediumTerm are nested objects)
-      // Use a more robust extraction that handles nested braces
+      // Robust JSON extraction — handles nested objects
       let jsonStr = null;
       const firstBrace = ar.indexOf('{');
       if (firstBrace >= 0) {
-        let depth = 0;
+        let d = 0;
         for (let i = firstBrace; i < ar.length; i++) {
-          if (ar[i] === '{') depth++;
-          else if (ar[i] === '}') {
-            depth--;
-            if (depth === 0) { jsonStr = ar.slice(firstBrace, i+1); break; }
-          }
+          if (ar[i]==='{') d++;
+          else if (ar[i]==='}') { d--; if (d===0) { jsonStr=ar.slice(firstBrace,i+1); break; } }
         }
       }
       if (!jsonStr) return null;
 
       try {
-        return validateRec(JSON.parse(jsonStr), ticker);
+        const parsed = JSON.parse(jsonStr);
+        // Override price with live data if available
+        if (hasLive) {
+          parsed.currentPrice = yahooData.currentPrice;
+          parsed.priceChange  = yahooData.priceChange;
+        }
+        return validateRec(parsed, ticker);
       } catch(e) {
-        // Try to fix common AI JSON mistakes
         try {
           const fixed = jsonStr
-            .replace(/,\s*}/g, '}')      // trailing commas
-            .replace(/,\s*]/g, ']')
-            .replace(/(['"])?([a-zA-Z_][a-zA-Z0-9_]*)(['"])?\s*:/g, '"$2":') // unquoted keys
-            .replace(/:\s*'([^']*)'/g, ':"$1"'); // single quotes
+            .replace(/,\s*}/g,'}').replace(/,\s*]/g,']')
+            .replace(/(['"'])?([a-zA-Z_]\w*)(['"'])?\s*:/g,'"$2":')
+            .replace(/:\s*'([^']*)'/g,':"$1"');
           return validateRec(JSON.parse(fixed), ticker);
         } catch(e2) { return null; }
       }
     }
 
     // Helper: analisis satu batch, return early jika sudah 5 rekomendasi
-    async function analyzeBatch(batch, batchNum) {
-      if (allRecs.length >= 5) return; // sudah cukup
-
+    async function analyzeBatch(batch, batchNum, yahooMap, techMap) {
+      if (allRecs.length >= 5) return;
       const remaining = batch.filter(t => !scanned.has(t));
       if (!remaining.length) return;
+      addLog(`\n📦 Batch ${batchNum} (${remaining.join(', ')}) — perlu ${5-allRecs.length} lagi`);
 
-      addLog(`\n📦 Batch ${batchNum} (${remaining.join(', ')}) — perlu ${5 - allRecs.length} rekomendasi lagi`);
-
-      for (let i = 0; i < remaining.length; i++) {
-        if (allRecs.length >= 5) {
-          addLog(`🎯 Sudah dapat 5 rekomendasi — batch ${batchNum} dihentikan`);
-          break;
-        }
-
-        const ticker = remaining[i];
+      for (let i=0; i<remaining.length; i++) {
+        if (allRecs.length >= 5) { addLog(`🎯 Sudah 5 — batch ${batchNum} dihentikan`); break; }
+        const ticker     = remaining[i];
         scanned.add(ticker);
-        const holding = state.holdings.find(h => h.ticker === ticker);
+        const holding    = state.holdings.find(h => h.ticker===ticker);
         const holdingCtx = holding ? `User punya ${holding.lots} lot @ avg Rp ${holding.avgPrice.toLocaleString('id-ID')}. ` : '';
         const totalScanned = scanned.size;
-        const totalMax = batch1.length + batch2.length + batch3.length;
+        const totalMax = batch1.length+batch2.length+batch3.length;
 
         setLoading(
-          `Analisis ${ticker} (${totalScanned}/${totalMax} saham)`,
-          `Batch ${batchNum} · ${allRecs.length}/5 rekomendasi terkumpul`,
-          10 + Math.round((totalScanned / totalMax) * 80)
+          `Analisis ${ticker} (${totalScanned}/${totalMax})`,
+          `Batch ${batchNum} · ${allRecs.length}/5 rekomendasi`,
+          15 + Math.round((totalScanned/totalMax)*75)
         );
-        addLog(`🧠 ${ticker}: analisis...`);
+        addLog(`🧠 ${ticker}: analisis${yahooMap[ticker]?' (data live ✓)':''}...`);
 
         try {
           let rec = null;
           const MAX_ATTEMPTS = 2;
-
-          for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-            if (attempt > 0) {
+          for (let attempt=0; attempt<MAX_ATTEMPTS; attempt++) {
+            if (attempt>0) {
               addLog(`🔄 ${ticker}: retry ${attempt}/${MAX_ATTEMPTS-1}...`);
-              await new Promise(r => setTimeout(r, 1500));
+              await new Promise(r => setTimeout(r,1500));
             }
-            rec = await analyzeStock(ticker, holding, holdingCtx, attempt);
+            rec = await analyzeStock(ticker, holding, holdingCtx, attempt,
+                                     yahooMap[ticker]||null, techMap[ticker]||null);
             if (!rec) { addLog(`⚠️ ${ticker}: JSON tidak valid (attempt ${attempt+1})`); continue; }
             if (rec.confidence !== 'low') break;
             addLog(`➖ ${ticker}: confidence rendah (attempt ${attempt+1}/${MAX_ATTEMPTS})`);
           }
-
-          if (!rec) {
-            addLog(`⚠️ ${ticker}: gagal, skip`);
-          } else if (rec.confidence === 'low') {
-            addLog(`❌ ${ticker}: tetap low, dilewati`);
-          } else {
+          if (!rec)                        addLog(`⚠️ ${ticker}: gagal, skip`);
+          else if (rec.confidence==='low') addLog(`❌ ${ticker}: tetap low, dilewati`);
+          else {
             allRecs.push(rec);
-            addLog(`✅ ${ticker} → ${rec.signal.toUpperCase()} (${rec.confidence}) — total ${allRecs.length}/5`, 'var(--green)');
+            addLog(`✅ ${ticker} → ${rec.signal.toUpperCase()} (${rec.confidence}) Rp ${rec.currentPrice.toLocaleString('id-ID')} — total ${allRecs.length}/5`, 'var(--green)');
           }
-        } catch(e) {
-          addLog(`⚠️ ${ticker}: ${e.message}`);
-        }
+        } catch(e) { addLog(`⚠️ ${ticker}: ${e.message}`); }
 
-        if (i < remaining.length - 1 && allRecs.length < 5) {
-          await new Promise(r => setTimeout(r, 1500));
-        }
+        if (i<remaining.length-1 && allRecs.length<5)
+          await new Promise(r => setTimeout(r,1500));
       }
     }
 
     // Jalankan batch 1, lalu batch 2 jika perlu, lalu batch 3 jika masih kurang
-    await analyzeBatch(batch1, 1);
+    await analyzeBatch(batch1, 1, yahooMap, techMap);
     if (allRecs.length < 5 && batch2.length) {
       addLog(`\n⚡ Batch 1 selesai (${allRecs.length}/5) — lanjut ke Batch 2...`);
       await new Promise(r => setTimeout(r, 1000));
-      await analyzeBatch(batch2, 2);
+      await analyzeBatch(batch2, 2, yahooMap, techMap);
     }
     if (allRecs.length < 5 && batch3.length) {
       addLog(`\n⚡ Batch 2 selesai (${allRecs.length}/5) — lanjut ke Batch 3...`);
       await new Promise(r => setTimeout(r, 1000));
-      await analyzeBatch(batch3, 3);
+      await analyzeBatch(batch3, 3, yahooMap, techMap);
     }
 
     addLog(`\n📊 Scan selesai: ${scanned.size} saham dipindai, ${allRecs.length} lolos threshold`);
@@ -1288,6 +1499,10 @@ JSON saja: {"marketCondition":"bullish|neutral|bearish","marketComment":"1 kalim
     statusEl.textContent = result.quietMarket
       ? `⚠️ ${result.quietReason}`
       : `✅ ${result.recommendations.length} rekomendasi · ${result.marketComment}`;
+
+    // Store yahoo data for UI badge display
+    state.marketData = yahooMap;
+    saveState();
 
     processResult(result);
     setTimeout(() => { logEl.classList.remove('visible'); }, 5000);
@@ -1476,7 +1691,14 @@ function renderRecommendations(result) {
           <div>
             <div style="display:flex;align-items:center">
               <div class="ticker">${r.ticker}</div>
-              <span class="data-badge badge-searched">🔍 SEARCHED</span>
+              ${(() => {
+                const md = (state.marketData||{})[r.ticker];
+                if (!md) return `<span class="data-badge badge-searched">EST</span>`;
+                const age = md.ageHrs !== undefined ? md.ageHrs : 99;
+                const label = age < 1 ? 'LIVE' : age <= 8 ? `${age}j lalu` : age <= 24 ? 'EOD' : `${Math.round(age/24)}hr lalu`;
+                const cls   = age <= 24 ? 'badge-live' : 'badge-searched';
+                return `<span class="data-badge ${cls}">${label}</span>`;
+              })()}
             </div>
             <div class="company-name">${r.companyName}</div>
           </div>

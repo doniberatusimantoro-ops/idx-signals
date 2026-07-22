@@ -938,7 +938,10 @@ function formatTechnicalsForPrompt(ticker, data, tech) {
   return lines.join('\n');
 }
 
-
+// ═══════════════════════════════════════════════════════
+// FOREX — ExchangeRate API
+// ═══════════════════════════════════════════════════════
+async function fetchUsdIdr() {
   try {
     const r = await fetch('https://api.exchangerate-api.com/v4/latest/USD', {signal: AbortSignal.timeout(5000)});
     const d = await r.json();
@@ -1451,8 +1454,10 @@ Balas JSON SATU BARIS tanpa markdown:
     if (allRecs.length > 0) {
       addLog('📋 Menyusun ringkasan pasar...');
       try {
-        const sp = `IDX ${todayShort}. Saham: ${allRecs.map(r=>`${r.ticker}:${r.signal}`).join(',')}. IHSG ~${ihsg||6200}.
-JSON saja: {"marketCondition":"bullish|neutral|bearish","marketComment":"1 kalimat kondisi pasar Bahasa Indonesia","ihsg":${ihsg||6200},"ihsgChange":0.0,"selfNote":"1 kalimat evaluasi sinyal AI"}`;
+        const sahamList = allRecs.map(r=>`${r.ticker}:${r.signal}`).join(',');
+        const ihsgEst   = ihsg || 6200;
+        const spFormat  = '{"marketCondition":"bullish|neutral|bearish","marketComment":"1 kalimat","ihsg":' + ihsgEst + ',"ihsgChange":0.0,"selfNote":"1 kalimat evaluasi"}';
+        const sp = `IDX ${todayShort}. Saham: ${sahamList}. IHSG ~${ihsgEst}.\nJSON saja: ${spFormat}`;
         const sr = await callGroq(
           [{ role: 'user', content: sp }],
           apiKey,

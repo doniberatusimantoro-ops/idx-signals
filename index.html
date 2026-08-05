@@ -263,37 +263,53 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
 
   <!-- PORTOFOLIO -->
   <div id="holdings" class="panel">
-    <div style="display:flex;justify-content:space-between;align-items:center">
-      <span class="section-label">Portofolio Saya</span>
-      <div style="display:flex;gap:8px;align-items:center">
-        <button onclick="refreshHoldingPrices()" style="font-size:10px;color:var(--accent);background:none;border:none;cursor:pointer;font-family:var(--font-mono)" id="refresh-price-btn">↻ Refresh harga</button>
-        <button onclick="clearHoldings()" style="font-size:10px;color:var(--text3);background:none;border:none;cursor:pointer;font-family:var(--font-mono)">Hapus semua</button>
+
+    <!-- UPDATE HARGA BUTTON — prominent -->
+    <div style="background:linear-gradient(135deg,rgba(123,110,246,0.12),rgba(46,204,138,0.05));border:1px solid rgba(123,110,246,0.25);border-radius:var(--r);padding:12px 14px;display:flex;align-items:center;gap:12px">
+      <div style="flex:1">
+        <div style="font-family:var(--font-head);font-size:11px;font-weight:700;color:var(--accent);letter-spacing:.04em;margin-bottom:2px">HARGA PORTOFOLIO</div>
+        <div style="font-size:11px;color:var(--text2)" id="portfolio-data-status">Tekan tombol untuk update harga live dari Yahoo Finance</div>
       </div>
+      <button onclick="refreshHoldingPrices()" id="refresh-price-btn"
+        style="background:var(--accent);color:#fff;border:none;border-radius:var(--r-sm);font-family:var(--font-head);font-size:12px;font-weight:700;padding:9px 14px;cursor:pointer;white-space:nowrap;letter-spacing:.02em;flex-shrink:0">
+        ↻ Update Harga
+      </button>
     </div>
 
-    <!-- SUMMARY CARD -->
-    <div id="portfolio-summary" style="display:none;background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:14px">
-      <div style="font-family:var(--font-head);font-size:10px;font-weight:700;color:var(--text3);letter-spacing:.1em;text-transform:uppercase;margin-bottom:10px">Ringkasan Portofolio</div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
-        <div style="background:var(--bg3);border-radius:var(--r-sm);padding:10px">
-          <div style="font-size:10px;color:var(--text3);margin-bottom:3px">Total Nilai Pasar</div>
-          <div id="sum-market-value" style="font-family:var(--font-mono);font-size:15px;font-weight:500;color:var(--text)">—</div>
+    <!-- SUMMARY P&L CARD -->
+    <div id="portfolio-summary" style="display:none">
+
+      <!-- Total P&L — paling besar dan jelas -->
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:16px 14px;text-align:center">
+        <div style="font-family:var(--font-head);font-size:10px;font-weight:700;color:var(--text3);letter-spacing:.1em;text-transform:uppercase;margin-bottom:8px">Total Unrealized P&L</div>
+        <div id="sum-total-pnl" style="font-family:var(--font-head);font-size:32px;font-weight:800;letter-spacing:-1px;margin-bottom:4px">—</div>
+        <div id="sum-return-pct" style="font-family:var(--font-mono);font-size:14px">—</div>
+        <div id="sum-data-freshness" style="font-size:10px;color:var(--text3);margin-top:6px;font-family:var(--font-mono)"></div>
+      </div>
+
+      <!-- 3 metrik kecil -->
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:10px;text-align:center">
+          <div style="font-size:10px;color:var(--text3);margin-bottom:4px">Nilai Pasar</div>
+          <div id="sum-market-value" style="font-family:var(--font-mono);font-size:12px;font-weight:500;color:var(--text)">—</div>
         </div>
-        <div style="background:var(--bg3);border-radius:var(--r-sm);padding:10px">
-          <div style="font-size:10px;color:var(--text3);margin-bottom:3px">Total Modal</div>
-          <div id="sum-cost-basis" style="font-family:var(--font-mono);font-size:15px;font-weight:500;color:var(--text)">—</div>
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:10px;text-align:center">
+          <div style="font-size:10px;color:var(--text3);margin-bottom:4px">Total Modal</div>
+          <div id="sum-cost-basis" style="font-family:var(--font-mono);font-size:12px;font-weight:500;color:var(--text)">—</div>
         </div>
-        <div style="background:var(--bg3);border-radius:var(--r-sm);padding:10px">
-          <div style="font-size:10px;color:var(--text3);margin-bottom:3px">Unrealized P&L</div>
-          <div id="sum-total-pnl" style="font-family:var(--font-mono);font-size:15px;font-weight:500">—</div>
-        </div>
-        <div style="background:var(--bg3);border-radius:var(--r-sm);padding:10px">
-          <div style="font-size:10px;color:var(--text3);margin-bottom:3px">Return</div>
-          <div id="sum-return-pct" style="font-family:var(--font-mono);font-size:15px;font-weight:500">—</div>
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:10px;text-align:center">
+          <div style="font-size:10px;color:var(--text3);margin-bottom:4px">Saham</div>
+          <div id="sum-stock-count" style="font-family:var(--font-mono);font-size:12px;font-weight:500;color:var(--text)">—</div>
         </div>
       </div>
-      <!-- Breakdown per status -->
-      <div style="display:flex;gap:8px;flex-wrap:wrap" id="sum-breakdown"></div>
+
+      <!-- Breakdown sinyal -->
+      <div style="display:flex;gap:6px;flex-wrap:wrap" id="sum-breakdown"></div>
+    </div>
+
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <span class="section-label">Daftar Saham</span>
+      <button onclick="clearHoldings()" style="font-size:10px;color:var(--text3);background:none;border:none;cursor:pointer;font-family:var(--font-mono)">Hapus semua</button>
     </div>
 
     <div id="holdings-list"></div>
@@ -301,16 +317,12 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
 
     <!-- EXPORT / IMPORT -->
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-      <button class="act-btn" onclick="exportHoldings()" style="padding:11px;font-size:12px">
-        📤 Export Portofolio
-      </button>
-      <button class="act-btn" onclick="document.getElementById('import-file').click()" style="padding:11px;font-size:12px">
-        📥 Import Portofolio
-      </button>
+      <button class="act-btn" onclick="exportHoldings()" style="padding:11px;font-size:12px">📤 Export</button>
+      <button class="act-btn" onclick="document.getElementById('import-file').click()" style="padding:11px;font-size:12px">📥 Import</button>
     </div>
     <input type="file" id="import-file" accept=".json" style="display:none" onchange="importHoldings(event)">
     <div style="font-size:10px;color:var(--text3);text-align:center;font-family:var(--font-mono)">
-      Simpan file export sebagai backup — bisa di-import ulang kapanpun
+      Export untuk backup — bisa di-import ulang kapanpun
     </div>
   </div>
 
@@ -395,7 +407,17 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
     <span class="section-label">Changelog</span>
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r);overflow:hidden">
       <div style="padding:12px 14px;border-bottom:1px solid var(--border)">
-        <div style="font-family:var(--font-head);font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">v3.0 — Kecepatan, harga live, no-sleep <span style="font-size:10px;font-weight:400;color:var(--text3);font-family:var(--font-mono)">saat ini</span></div>
+        <div style="font-family:var(--font-head);font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">v3.1 — Sanity check finansial <span style="font-size:10px;font-weight:400;color:var(--text3);font-family:var(--font-mono)">saat ini</span></div>
+        <div style="font-size:11px;color:var(--text2);line-height:1.7">
+          • Fix bug kritis: AI sering copy angka contoh TP/SL dari template, bukan hitung sendiri<br>
+          • Prompt sekarang eksplisit larang copy angka — wajib hitung dari data teknikal live<br>
+          • R/R ratio TIDAK LAGI dipercaya dari AI — dihitung ulang sistem dari (TP-harga)/(harga-SL)<br>
+          • Auto-correct: TP wajib di atas harga untuk BUY, di bawah untuk SELL (dan sebaliknya untuk SL)<br>
+          • targetDays dibatasi masuk akal: short 1-14 hari, medium selalu lebih lama dari short
+        </div>
+      </div>
+      <div style="padding:12px 14px;border-bottom:1px solid var(--border)">
+        <div style="font-family:var(--font-head);font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">v3.0 — Kecepatan, harga live, no-sleep</div>
         <div style="font-size:11px;color:var(--text2);line-height:1.7">
           • Analisis PARALEL dalam batch — 5 saham jalan bersamaan, bukan satu per satu<br>
           • Jeda dikurangi: 1500ms → 200ms antar batch, Yahoo timeout 12s → 6s<br>
@@ -617,22 +639,38 @@ function clearAllData() {
 }
 
 async function refreshHoldingPrices() {
-  if (!state.holdings.length) return;
+  if (!state.holdings.length) { alert('Tambahkan saham ke portofolio dulu.'); return; }
   const btn = document.getElementById('refresh-price-btn');
-  if (btn) { btn.textContent = '↻ Memuat...'; btn.style.opacity = '0.5'; }
+  const status = document.getElementById('portfolio-data-status');
+  if (btn) { btn.textContent = '↻ Memuat...'; btn.disabled = true; btn.style.opacity = '0.6'; }
+  if (status) status.textContent = `Mengambil harga ${state.holdings.length} saham dari Yahoo Finance...`;
 
   const tickers = state.holdings.map(h => h.ticker);
+  const t0 = Date.now();
   const results = await Promise.allSettled(tickers.map(t => fetchYahooData(t)));
 
+  let successCount = 0;
   results.forEach((res, i) => {
     if (res.status === 'fulfilled' && res.value) {
+      if (!state.marketData) state.marketData = {};
       state.marketData[tickers[i]] = res.value;
+      successCount++;
     }
   });
 
+  const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+  const now = new Date().toLocaleTimeString('id-ID', { timeZone: 'Asia/Jakarta', hour: '2-digit', minute: '2-digit' });
+
+  if (status) {
+    status.textContent = successCount > 0
+      ? `✅ ${successCount}/${tickers.length} saham diupdate · pukul ${now} WIB · ${elapsed}s`
+      : `⚠️ Gagal mengambil data — coba lagi`;
+  }
+
   saveState();
   renderHoldings();
-  if (btn) { btn.textContent = '↻ Refresh harga'; btn.style.opacity = '1'; }
+
+  if (btn) { btn.textContent = '↻ Update Harga'; btn.disabled = false; btn.style.opacity = '1'; }
 }
 
 function clearHoldings() {
@@ -1397,14 +1435,23 @@ DEFINISI CONFIDENCE:
       const ap = `Kamu analis saham IDX Indonesia senior. ${todayShort}. BI Rate: 6.25%. USD/IDR: ${usdIdr||16000}.
 ${holdingCtx}
 SAHAM: ${ticker}
+HARGA SEKARANG: Rp ${refPrice.toLocaleString('id-ID')} (PENTING: gunakan angka ini apa adanya, jangan diubah)
 ${dataCtx}
 
 ${angleCtx}
 ${confidenceDef}
 ${retryNote}
 
-Balas JSON SATU BARIS tanpa markdown:
-{"ticker":"${ticker}","companyName":"nama PT","signal":"buy|hold|sell","currentPrice":${refPrice},"priceChange":${yahooData?.priceChange||0.0},"confidence":"medium","styleTag":"Value|Growth|Swing","signals":["RSI","MA20"],"shortTerm":{"tp":${Math.round(refPrice*1.05)},"sl":${Math.round(refPrice*0.95)},"targetDays":7,"rr":"1:2.5"},"mediumTerm":{"tp":${Math.round(refPrice*1.12)},"sl":${Math.round(refPrice*0.93)},"targetDays":25,"rr":"1:3.0"},"reasoning":"2 kalimat konkret berdasarkan data di atas","alert":null,"isInPortfolio":${holding?'true':'false'}}`;
+ATURAN WAJIB UNTUK TP/SL (akan ditolak jika dilanggar):
+- Untuk signal BUY: TP HARUS lebih tinggi dari harga sekarang, SL HARUS lebih rendah
+- Untuk signal SELL: TP HARUS lebih rendah dari harga sekarang, SL HARUS lebih tinggi
+- Untuk signal HOLD: TP = target jika lanjut naik, SL = level cut-loss jika turun
+- TP/SL harus dihitung dari support/resistance DATA LIVE di atas, BUKAN persentase sembarangan dari harga
+- targetDays short-term: 3-10 hari. targetDays medium-term: 15-30 hari
+- R/R ratio akan dihitung ulang oleh sistem — isi angka TP dan SL yang masuk akal, biarkan sistem hitung rasionya
+
+Balas JSON SATU BARIS tanpa markdown, GANTI SEMUA ANGKA sesuai analisis Anda (jangan pakai angka template):
+{"ticker":"${ticker}","companyName":"nama resmi PT","signal":"buy|hold|sell","currentPrice":${refPrice},"priceChange":${yahooData?.priceChange||0.0},"confidence":"high|medium|low","styleTag":"Value|Growth|Swing","signals":["sebutkan sinyal nyata yang dipakai, mis. RSI_oversold atau Support_kuat"],"shortTerm":{"tp":HITUNG_DARI_RESISTANCE,"sl":HITUNG_DARI_SUPPORT,"targetDays":ANGKA_3_SAMPAI_10},"mediumTerm":{"tp":HITUNG_TARGET_LEBIH_JAUH,"sl":HITUNG_SL_LEBIH_LEBAR,"targetDays":ANGKA_15_SAMPAI_30},"reasoning":"2 kalimat konkret menyebutkan angka spesifik dari data di atas","alert":null,"isInPortfolio":${holding?'true':'false'}}`;
 
       const ar = await callGroq(
         [{ role: 'user', content: ap }],
@@ -1594,14 +1641,12 @@ Balas JSON SATU BARIS tanpa markdown:
 function validateRec(rec, ticker) {
   if (!rec || typeof rec !== 'object') return null;
 
-  // Required string fields
   const signal = (rec.signal || 'hold').toString().toLowerCase();
   if (!['buy','sell','hold'].includes(signal)) return null;
 
   const confidence = (rec.confidence || 'low').toString().toLowerCase();
   if (!['high','medium','low'].includes(confidence)) return null;
 
-  // Sanitize numbers — use reasonable fallback if 0 or missing
   const num = (v, fallback=0) => {
     const n = parseFloat(v);
     return (isNaN(n) || n === 0) ? fallback : n;
@@ -1615,11 +1660,43 @@ function validateRec(rec, ticker) {
   };
   const priceRef = knownPricesFallback[ticker] || 1000;
   const currentPrice = num(rec.currentPrice, priceRef);
-  const priceChange = num(rec.priceChange, 0);
+  const priceChange  = num(rec.priceChange, 0);
 
-  // Sanitize shortTerm and mediumTerm — use currentPrice as base for fallback
-  const st = rec.shortTerm || {};
+  const st = rec.shortTerm  || {};
   const mt = rec.mediumTerm || {};
+
+  // ── Sanity check + auto-correct: TP/SL harus searah dengan signal ──
+  // Untuk BUY: TP > harga > SL. Untuk SELL: TP < harga < SL. Untuk HOLD: sama seperti BUY.
+  function fixTargets(tpRaw, slRaw, tpFallbackPct, slFallbackPct) {
+    let tp = num(tpRaw, Math.round(currentPrice * (1 + tpFallbackPct)));
+    let sl = num(slRaw, Math.round(currentPrice * (1 - slFallbackPct)));
+
+    if (signal === 'sell') {
+      // TP harus di bawah harga, SL harus di atas
+      if (tp >= currentPrice) tp = Math.round(currentPrice * (1 - tpFallbackPct));
+      if (sl <= currentPrice) sl = Math.round(currentPrice * (1 + slFallbackPct));
+    } else {
+      // buy/hold: TP harus di atas harga, SL harus di bawah
+      if (tp <= currentPrice) tp = Math.round(currentPrice * (1 + tpFallbackPct));
+      if (sl >= currentPrice) sl = Math.round(currentPrice * (1 - slFallbackPct));
+    }
+    return { tp, sl };
+  }
+
+  const stFixed = fixTargets(st.tp, st.sl, 0.05, 0.05);
+  const mtFixed = fixTargets(mt.tp, mt.sl, 0.12, 0.07);
+
+  // ── Hitung ulang R/R ratio dari angka TP/SL asli — JANGAN percaya rr dari AI ──
+  function calcRR(tp, sl) {
+    const reward = Math.abs(tp - currentPrice);
+    const risk   = Math.abs(currentPrice - sl);
+    if (risk <= 0) return '1:0';
+    const ratio = reward / risk;
+    return `1:${ratio.toFixed(1)}`;
+  }
+
+  const stTargetDays = Math.max(1, Math.min(14,  Math.round(num(st.targetDays, 7))));
+  const mtTargetDays = Math.max(stTargetDays+3, Math.min(45, Math.round(num(mt.targetDays, 25))));
 
   return {
     ticker:      (rec.ticker      || ticker || '').toString().toUpperCase(),
@@ -1629,18 +1706,18 @@ function validateRec(rec, ticker) {
     priceChange,
     confidence,
     styleTag:    (rec.styleTag    || 'Mixed').toString(),
-    signals:     Array.isArray(rec.signals) ? rec.signals : ['Fundamental'],
+    signals:     Array.isArray(rec.signals) && rec.signals.length ? rec.signals : ['Analisis Umum'],
     shortTerm: {
-      tp:         num(st.tp, Math.round(currentPrice * 1.05)),
-      sl:         num(st.sl, Math.round(currentPrice * 0.95)),
-      targetDays: num(st.targetDays, 7),
-      rr:         (st.rr || '1:2').toString()
+      tp: stFixed.tp,
+      sl: stFixed.sl,
+      targetDays: stTargetDays,
+      rr: calcRR(stFixed.tp, stFixed.sl)   // dihitung ulang, bukan dari AI
     },
     mediumTerm: {
-      tp:         num(mt.tp, Math.round(currentPrice * 1.12)),
-      sl:         num(mt.sl, Math.round(currentPrice * 0.93)),
-      targetDays: num(mt.targetDays, 25),
-      rr:         (mt.rr || '1:2').toString()
+      tp: mtFixed.tp,
+      sl: mtFixed.sl,
+      targetDays: mtTargetDays,
+      rr: calcRR(mtFixed.tp, mtFixed.sl)   // dihitung ulang, bukan dari AI
     },
     reasoning:     (rec.reasoning    || 'Tidak ada reasoning.').toString(),
     alert:         rec.alert          || null,
@@ -1886,25 +1963,47 @@ function renderHoldings() {
   // ── Render summary card ──
   if (summaryEl) {
     summaryEl.style.display = 'block';
-    document.getElementById('sum-market-value').textContent = formatRp(totalMarketValue);
-    document.getElementById('sum-cost-basis').textContent   = formatRp(totalCostBasis);
 
+    // Total P&L — big and prominent
     const pnlEl = document.getElementById('sum-total-pnl');
     pnlEl.textContent = (totalPnl >= 0 ? '+' : '') + formatRp(totalPnl);
-    pnlEl.className = totalPnl >= 0 ? 'pos' : 'neg';
+    pnlEl.style.color  = totalPnl >= 0 ? 'var(--green)' : 'var(--red)';
 
     const retEl = document.getElementById('sum-return-pct');
-    retEl.textContent = (totalReturnPct >= 0 ? '+' : '') + totalReturnPct.toFixed(2) + '%';
-    retEl.className = totalReturnPct >= 0 ? 'pos' : 'neg';
+    retEl.textContent = (totalReturnPct >= 0 ? '+' : '') + totalReturnPct.toFixed(2) + '%  return keseluruhan';
+    retEl.style.color  = totalReturnPct >= 0 ? 'var(--green)' : 'var(--red)';
 
-    // Status breakdown pills
+    // 3 small metrics
+    document.getElementById('sum-market-value').textContent = formatRp(totalMarketValue);
+    document.getElementById('sum-cost-basis').textContent   = formatRp(totalCostBasis);
+    document.getElementById('sum-stock-count').textContent  =
+      `${state.holdings.length} saham · ${state.holdings.reduce((s,h)=>s+h.lots,0)} lot`;
+
+    // Data freshness
+    const liveMap = state.marketData || {};
+    const freshCount = state.holdings.filter(h => liveMap[h.ticker]?.currentPrice).length;
+    const freshnessEl = document.getElementById('sum-data-freshness');
+    if (freshnessEl) {
+      if (freshCount === 0) {
+        freshnessEl.textContent = '⚠ Harga belum diupdate — tekan "Update Harga"';
+        freshnessEl.style.color = 'var(--amber)';
+      } else {
+        const ages = state.holdings.map(h => liveMap[h.ticker]?.ageHrs).filter(a => a != null);
+        const maxAge = ages.length ? Math.max(...ages) : 0;
+        const ageLabel = maxAge < 1 ? 'realtime' : maxAge <= 24 ? `${Math.round(maxAge)} jam lalu` : `${Math.round(maxAge/24)} hari lalu`;
+        freshnessEl.textContent = `✅ ${freshCount}/${state.holdings.length} harga live · data ${ageLabel}`;
+        freshnessEl.style.color = maxAge <= 24 ? 'var(--green)' : 'var(--amber)';
+      }
+    }
+
+    // Signal breakdown pills
     const breakdownEl = document.getElementById('sum-breakdown');
     const pills = [];
-    if (countBuy)        pills.push(`<span style="font-size:11px;background:var(--green-bg);color:var(--green);border:1px solid var(--green-border);border-radius:20px;padding:3px 10px">Tambah ${countBuy}</span>`);
-    if (countHold)       pills.push(`<span style="font-size:11px;background:var(--amber-bg);color:var(--amber);border:1px solid var(--amber-border);border-radius:20px;padding:3px 10px">Tahan ${countHold}</span>`);
-    if (countSell)       pills.push(`<span style="font-size:11px;background:var(--red-bg);color:var(--red);border:1px solid var(--red-border);border-radius:20px;padding:3px 10px">Jual ${countSell}</span>`);
-    if (countSLBreached) pills.push(`<span style="font-size:11px;background:var(--red-bg);color:var(--red);border:1px solid var(--red-border);border-radius:20px;padding:3px 10px">⚠ SL ${countSLBreached}</span>`);
-    if (!pills.length)   pills.push(`<span style="font-size:11px;color:var(--text3)">Jalankan Analisis untuk mendapatkan rekomendasi per saham</span>`);
+    if (countBuy)        pills.push(`<span style="font-size:11px;background:var(--green-bg);color:var(--green);border:1px solid var(--green-border);border-radius:20px;padding:3px 10px">▲ Tambah ${countBuy}</span>`);
+    if (countHold)       pills.push(`<span style="font-size:11px;background:var(--amber-bg);color:var(--amber);border:1px solid var(--amber-border);border-radius:20px;padding:3px 10px">● Tahan ${countHold}</span>`);
+    if (countSell)       pills.push(`<span style="font-size:11px;background:var(--red-bg);color:var(--red);border:1px solid var(--red-border);border-radius:20px;padding:3px 10px">▼ Jual ${countSell}</span>`);
+    if (countSLBreached) pills.push(`<span style="font-size:11px;background:var(--red-bg);color:var(--red);border:1px solid var(--red-border);border-radius:20px;padding:3px 10px">⚠ SL Breach ${countSLBreached}</span>`);
+    if (!pills.length)   pills.push(`<span style="font-size:11px;color:var(--text3)">Jalankan Analisis untuk rekomendasi per saham</span>`);
     breakdownEl.innerHTML = pills.join('');
   }
 
@@ -1913,6 +2012,43 @@ function renderHoldings() {
   holdingData.forEach(({ h, rec, cur, pc, pnl, pnlPct, action, slBreached, dataAge }) => {
     const aLabel = {buy:'Tambah Posisi', hold:'Tahan', sell:'Jual Sekarang'}[action] || 'Tahan';
     const aClass = {buy:'tag-add', hold:'tag-hold', sell:'tag-exit'}[action] || 'tag-hold';
+
+    // ── P&L progress bar antara SL dan TP ──
+    const stTp = rec?.shortTerm?.tp || 0;
+    const stSl = rec?.shortTerm?.sl || 0;
+    let progressBar = '';
+    if (stTp && stSl && stTp > stSl) {
+      const range   = stTp - stSl;
+      const pos     = Math.max(0, Math.min(100, ((cur - stSl) / range) * 100));
+      const barColor = cur >= h.avgPrice ? 'var(--green)' : 'var(--red)';
+      progressBar = `
+        <div style="margin:10px 0 4px">
+          <div style="display:flex;justify-content:space-between;font-size:9px;color:var(--text3);font-family:var(--font-mono);margin-bottom:4px">
+            <span style="color:var(--red)">SL Rp ${stSl.toLocaleString('id-ID')}</span>
+            <span style="color:var(--text3)">harga sekarang</span>
+            <span style="color:var(--green)">TP Rp ${stTp.toLocaleString('id-ID')}</span>
+          </div>
+          <div style="position:relative;height:6px;background:var(--bg3);border-radius:3px;overflow:visible">
+            <div style="position:absolute;left:0;top:0;height:100%;width:${pos.toFixed(0)}%;background:${barColor};border-radius:3px;transition:width .4s ease"></div>
+            <div style="position:absolute;top:-3px;left:calc(${pos.toFixed(0)}% - 5px);width:10px;height:10px;background:${barColor};border-radius:50%;border:2px solid var(--bg2)"></div>
+          </div>
+        </div>`;
+    }
+
+    // ── Estimasi P&L jika target tercapai ──
+    const estProfitTP = stTp ? ((stTp - h.avgPrice) * h.lots * 100) : null;
+    const estLossSL   = stSl ? ((stSl - h.avgPrice) * h.lots * 100) : null;
+    const estRow = (estProfitTP || estLossSL) ? `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px">
+        ${estProfitTP ? `<div style="background:var(--green-bg);border:1px solid var(--green-border);border-radius:var(--r-sm);padding:7px;text-align:center">
+          <div style="font-size:9px;color:var(--green);font-family:var(--font-head);font-weight:700;letter-spacing:.04em;margin-bottom:2px">JIKA TP</div>
+          <div style="font-family:var(--font-mono);font-size:12px;font-weight:500;color:var(--green)">+${formatRp(estProfitTP)}</div>
+        </div>` : ''}
+        ${estLossSL ? `<div style="background:var(--red-bg);border:1px solid var(--red-border);border-radius:var(--r-sm);padding:7px;text-align:center">
+          <div style="font-size:9px;color:var(--red);font-family:var(--font-head);font-weight:700;letter-spacing:.04em;margin-bottom:2px">JIKA SL</div>
+          <div style="font-family:var(--font-mono);font-size:12px;font-weight:500;color:var(--red)">${formatRp(estLossSL)}</div>
+        </div>` : ''}
+      </div>` : '';
 
     html += `<div class="holding-card"${slBreached ? ' style="border-color:var(--red-border)"' : ''}>
       <div class="holding-card-body">
@@ -1926,26 +2062,31 @@ function renderHoldings() {
             ${slBreached ? '<div style="font-size:10px;color:var(--red);margin-top:4px">⚠ SL Tertembus</div>' : ''}
           </div>
         </div>
-        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px">
+
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:2px">
           <div>
-            <div style="font-family:var(--font-mono);font-size:18px;font-weight:500" class="${pnl>=0?'pos':'neg'}">${pnl>=0?'+':''}${formatRp(pnl)}</div>
-            <div style="font-size:10px;color:var(--text3)">Unrealized P&L (${pnl>=0?'+':''}${pnlPct.toFixed(1)}%)</div>
+            <div style="font-family:var(--font-mono);font-size:20px;font-weight:500" class="${pnl>=0?'pos':'neg'}">${pnl>=0?'+':''}${formatRp(pnl)}</div>
+            <div style="font-size:10px;color:var(--text3)">Unrealized P&L (${pnl>=0?'+':''}${pnlPct.toFixed(2)}%)</div>
           </div>
           <div style="text-align:right">
             <div style="display:flex;align-items:center;justify-content:flex-end;gap:5px">
-              <div style="font-family:var(--font-mono);font-size:14px;color:var(--text2)">Rp ${cur.toLocaleString('id-ID')}</div>
+              <div style="font-family:var(--font-mono);font-size:15px;color:var(--text)">${cur.toLocaleString('id-ID')}</div>
               <span style="font-size:9px;font-family:var(--font-mono);background:var(--bg3);border:1px solid var(--border);border-radius:3px;padding:1px 4px;color:var(--text3)">${dataAge}</span>
             </div>
-            <div style="font-size:11px;font-family:var(--font-mono)" class="${pc>=0?'pos':'neg'}">${pc>=0?'+':''}${pc.toFixed(2)}%</div>
+            <div style="font-size:11px;font-family:var(--font-mono)" class="${pc>=0?'pos':'neg'}">${pc>=0?'+':''}${pc.toFixed(2)}% hari ini</div>
           </div>
         </div>
-        <div class="holding-targets">
-          <span class="ht">ST TP <span>${rec?.shortTerm?.tp ? `Rp ${rec.shortTerm.tp.toLocaleString('id-ID')}` : '—'}</span></span>
+
+        ${progressBar}
+        ${estRow}
+
+        ${rec ? `<div style="margin-top:10px" class="holding-targets">
+          <span class="ht">ST TP <span>${rec.shortTerm?.tp ? `Rp ${rec.shortTerm.tp.toLocaleString('id-ID')}` : '—'}</span></span>
           <span class="ht" style="color:var(--border2)">·</span>
-          <span class="ht">MT TP <span>${rec?.mediumTerm?.tp ? `Rp ${rec.mediumTerm.tp.toLocaleString('id-ID')}` : '—'}</span></span>
+          <span class="ht">MT TP <span>${rec.mediumTerm?.tp ? `Rp ${rec.mediumTerm.tp.toLocaleString('id-ID')}` : '—'}</span></span>
           <span class="ht" style="color:var(--border2)">·</span>
-          <span class="ht">SL <span style="color:var(--red)">${rec?.shortTerm?.sl ? `Rp ${rec.shortTerm.sl.toLocaleString('id-ID')}` : '—'}</span></span>
-        </div>
+          <span class="ht">SL <span style="color:var(--red)">${rec.shortTerm?.sl ? `Rp ${rec.shortTerm.sl.toLocaleString('id-ID')}` : '—'}</span></span>
+        </div>` : '<div style="font-size:10px;color:var(--text3);margin-top:8px">Jalankan Analisis untuk TP/SL</div>'}
       </div>
       <div class="card-actions">
         <button class="act-btn" onclick="removeHolding('${h.ticker}')">Hapus</button>

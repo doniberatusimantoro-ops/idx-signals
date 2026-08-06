@@ -647,14 +647,22 @@ async function refreshHoldingPrices() {
 
   const tickers = state.holdings.map(h => h.ticker);
   const t0 = Date.now();
-  const results = await Promise.allSettled(tickers.map(t => fetchYahooData(t)));
+  const proxyLogs = [];
+  const onProxyLog = (msg) => proxyLogs.push(msg);
+
+  const results = await Promise.allSettled(
+    tickers.map(t => fetchYahooData(t, onProxyLog))
+  );
 
   let successCount = 0;
+  const failedTickers = [];
   results.forEach((res, i) => {
     if (res.status === 'fulfilled' && res.value) {
       if (!state.marketData) state.marketData = {};
       state.marketData[tickers[i]] = res.value;
       successCount++;
+    } else {
+      failedTickers.push(tickers[i]);
     }
   });
 
@@ -662,15 +670,27 @@ async function refreshHoldingPrices() {
   const now = new Date().toLocaleTimeString('id-ID', { timeZone: 'Asia/Jakarta', hour: '2-digit', minute: '2-digit' });
 
   if (status) {
-    status.textContent = successCount > 0
-      ? `✅ ${successCount}/${tickers.length} saham diupdate · pukul ${now} WIB · ${elapsed}s`
-      : `⚠️ Gagal mengambil data — coba lagi`;
+    if (successCount > 0) {
+      status.textContent = `✅ ${successCount}/${tickers.length} saham diupdate · pukul ${now} WIB · ${elapsed}s`;
+      if (failedTickers.length) status.textContent += ` · gagal: ${failedTickers.join(', ')}`;
+    } else {
+      status.innerHTML = `⚠️ Semua proxy CORS sedang bermasalah. <a href="#" onclick="showProxyDebugLog(event)" style="color:var(--accent)">Lihat detail</a>`;
+      status.dataset.errorLog = JSON.stringify(proxyLogs);
+    }
   }
 
   saveState();
   renderHoldings();
 
   if (btn) { btn.textContent = '↻ Update Harga'; btn.disabled = false; btn.style.opacity = '1'; }
+}
+
+function showProxyDebugLog(e) {
+  e.preventDefault();
+  const status = document.getElementById('portfolio-data-status');
+  const logs = JSON.parse(status?.dataset.errorLog || '[]');
+  alert('Detail error:\n\n' + (logs.length ? logs.join('\n') : 'Tidak ada log tersedia.') +
+    '\n\nSemua proxy CORS gratis kadang tidak stabil. Coba lagi dalam beberapa menit, atau gunakan harga dari analisis AI sebagai gantinya.');
 }
 
 function clearHoldings() {
@@ -819,19 +839,23 @@ function updateClock() {
 // YAHOO FINANCE — harga live IDX via allorigins proxy
 // ═══════════════════════════════════════════════════════
 // ── Yahoo Finance proxy list — dicoba berurutan sampai berhasil ──
+// PENTING: corsproxy.io per 2026 hanya gratis untuk localhost/dev,
+// TIDAK bekerja di domain production seperti Vercel — taruh di urutan akhir saja
 const YAHOO_PROXIES = [
-  // Proxy 1: allorigins (paling umum, kadang lambat)
-  url => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,
-  // Proxy 2: corsproxy.io (lebih reliable)
-  url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
-  // Proxy 3: thingproxy (backup)
-  url => `https://thingproxy.freeboard.io/fetch/${url}`,
+  // Proxy 1: CodeTabs — rate limit 5/detik, bekerja di semua domain
+  { name: 'codetabs',   fn: url => `https://api.codetabs.com/v1/proxy/?quest=${encodeURIComponent(url)}` },
+  // Proxy 2: allorigins — kadang down tapi masih sering jalan
+  { name: 'allorigins', fn: url => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}` },
+  // Proxy 3: thingproxy — backup ketiga
+  { name: 'thingproxy', fn: url => `https://thingproxy.freeboard.io/fetch/${url}` },
+  // Proxy 4: corsproxy.io — HANYA bekerja jika di-akses dari localhost, jarang berhasil di production
+  { name: 'corsproxy.io', fn: url => `https://corsproxy.io/?${encodeURIComponent(url)}` },
 ];
 
-async function fetchYahooRaw(url, proxyFn) {
-  const proxyUrl = proxyFn(url);
-  const res = await fetch(proxyUrl, { signal: AbortSignal.timeout(6000) });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+async function fetchYahooRaw(url, proxy) {
+  const proxyUrl = proxy.fn(url);
+  const res = await fetch(proxyUrl, { signal: AbortSignal.timeout(8000) });
+  if (!res.ok) throw new Error(`${proxy.name}: HTTP ${res.status}`);
   const text = await res.text();
   // allorigins wraps in JSON {contents:...}, others return raw
   try {
@@ -842,21 +866,22 @@ async function fetchYahooRaw(url, proxyFn) {
   }
 }
 
-async function fetchYahooData(ticker) {
+async function fetchYahooData(ticker, onProxyLog) {
   const sym = encodeURIComponent(ticker + '.JK');
-  // Try v8 chart endpoint first (richer data), fallback to v7 quote
   const endpoints = [
     `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&range=120d`,
     `https://query2.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&range=120d`,
   ];
 
+  const errors = [];
+
   for (const endpoint of endpoints) {
-    for (const proxyFn of YAHOO_PROXIES) {
+    for (const proxy of YAHOO_PROXIES) {
       try {
-        const raw = await fetchYahooRaw(endpoint, proxyFn);
+        const raw = await fetchYahooRaw(endpoint, proxy);
         const data = JSON.parse(raw);
         const result = data?.chart?.result?.[0];
-        if (!result) continue;
+        if (!result) { errors.push(`${proxy.name}: no result`); continue; }
 
         const meta    = result.meta;
         const quote   = result.indicators?.quote?.[0] || {};
@@ -874,9 +899,11 @@ async function fetchYahooData(ticker) {
         const lastTs = meta.regularMarketTime || 0;
         const ageHrs = lastTs ? (Date.now()/1000 - lastTs) / 3600 : 0;
         if (lastTs && ageHrs > 48) {
-          console.warn(`${ticker}: data terlalu lama (${Math.round(ageHrs)}jam)`);
+          errors.push(`${proxy.name}: data ${Math.round(ageHrs)}jam (terlalu lama)`);
           continue;
         }
+
+        if (onProxyLog) onProxyLog(`${ticker}: berhasil via ${proxy.name}`);
 
         return {
           ticker,
@@ -888,17 +915,19 @@ async function fetchYahooData(ticker) {
           marketTime:    lastTs ? new Date(lastTs*1000).toLocaleString('id-ID',{timeZone:'Asia/Jakarta'}) : null,
           ageHrs:        Math.round(ageHrs),
           closes, volumes,
-          dataSource:    'Yahoo Finance'
+          dataSource:    proxy.name
         };
 
       } catch(e) {
-        // Try next proxy silently
+        errors.push(`${proxy.name}: ${e.message}`);
         continue;
       }
     }
   }
 
-  // All proxies failed
+  // All proxies failed — log details for debugging
+  if (onProxyLog) onProxyLog(`${ticker}: SEMUA proxy gagal — ${errors.slice(0,2).join(', ')}`);
+  console.warn(`fetchYahooData(${ticker}) all proxies failed:`, errors);
   return null;
 }
 

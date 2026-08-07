@@ -407,7 +407,18 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
     <span class="section-label">Changelog</span>
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r);overflow:hidden">
       <div style="padding:12px 14px;border-bottom:1px solid var(--border)">
-        <div style="font-family:var(--font-head);font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">v3.1 — Sanity check finansial <span style="font-size:10px;font-weight:400;color:var(--text3);font-family:var(--font-mono)">saat ini</span></div>
+        <div style="font-family:var(--font-head);font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">v3.2 — Fix "Load failed" bug iOS Safari <span style="font-size:10px;font-weight:400;color:var(--text3);font-family:var(--font-mono)">saat ini</span></div>
+        <div style="font-size:11px;color:var(--text2);line-height:1.7">
+          • Root cause: bug Safari iOS — fetch gagal jika dijalankan persis saat app kembali visible/aktif<br>
+          • Network warm-up ping otomatis saat app dibuka dari home screen/background<br>
+          • Warm-up delay 400ms sebelum fetch harga dimulai<br>
+          • Auto-retry 1x khusus untuk error "Load failed"/"aborted" dengan jeda 1.2 detik<br>
+          • Timeout diperpanjang 8s → 15s untuk koneksi mobile yang lebih lambat<br>
+          • cache:'no-store' ditambahkan — hindari cache stale khas iOS PWA
+        </div>
+      </div>
+      <div style="padding:12px 14px;border-bottom:1px solid var(--border)">
+        <div style="font-family:var(--font-head);font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">v3.1 — Sanity check finansial</div>
         <div style="font-size:11px;color:var(--text2);line-height:1.7">
           • Fix bug kritis: AI sering copy angka contoh TP/SL dari template, bukan hitung sendiri<br>
           • Prompt sekarang eksplisit larang copy angka — wajib hitung dari data teknikal live<br>
@@ -643,6 +654,12 @@ async function refreshHoldingPrices() {
   const btn = document.getElementById('refresh-price-btn');
   const status = document.getElementById('portfolio-data-status');
   if (btn) { btn.textContent = '↻ Memuat...'; btn.disabled = true; btn.style.opacity = '0.6'; }
+  if (status) status.textContent = `Menyiapkan koneksi...`;
+
+  // Warm-up delay — hindari bug iOS Safari "Load failed" saat fetch
+  // dijalankan persis setelah app kembali aktif/visible
+  await new Promise(r => setTimeout(r, 400));
+
   if (status) status.textContent = `Mengambil harga ${state.holdings.length} saham dari Yahoo Finance...`;
 
   const tickers = state.holdings.map(h => h.ticker);
@@ -852,17 +869,30 @@ const YAHOO_PROXIES = [
   { name: 'corsproxy.io', fn: url => `https://corsproxy.io/?${encodeURIComponent(url)}` },
 ];
 
-async function fetchYahooRaw(url, proxy) {
+async function fetchYahooRaw(url, proxy, retryOnFail = true) {
   const proxyUrl = proxy.fn(url);
-  const res = await fetch(proxyUrl, { signal: AbortSignal.timeout(8000) });
-  if (!res.ok) throw new Error(`${proxy.name}: HTTP ${res.status}`);
-  const text = await res.text();
-  // allorigins wraps in JSON {contents:...}, others return raw
   try {
-    const json = JSON.parse(text);
-    return json.contents ? json.contents : text;
+    const res = await fetch(proxyUrl, {
+      signal: AbortSignal.timeout(15000), // 15s — koneksi mobile lebih lambat
+      cache: 'no-store' // hindari cache stale di iOS PWA
+    });
+    if (!res.ok) throw new Error(`${proxy.name}: HTTP ${res.status}`);
+    const text = await res.text();
+    try {
+      const json = JSON.parse(text);
+      return json.contents ? json.contents : text;
+    } catch(e) {
+      return text; // raw response
+    }
   } catch(e) {
-    return text; // raw response
+    // Known iOS Safari bug: fetch gagal dengan "Load failed" jika dijalankan
+    // segera setelah app kembali visible/aktif. Retry sekali setelah jeda singkat.
+    const isTransientError = /load failed|aborted|network/i.test(e.message);
+    if (retryOnFail && isTransientError) {
+      await new Promise(r => setTimeout(r, 1200));
+      return fetchYahooRaw(url, proxy, false); // retry sekali saja, tanpa retry lagi
+    }
+    throw e;
   }
 }
 
@@ -1072,6 +1102,20 @@ document.addEventListener('visibilitychange', async () => {
     // Only re-acquire if analysis is running
     const btn = document.getElementById('run-btn');
     if (btn && btn.disabled) await requestWakeLock();
+  }
+});
+
+// Network warm-up: iOS Safari punya bug fetch "Load failed" jika request
+// dilakukan segera setelah app kembali visible/aktif. Kirim ping ringan
+// di background untuk "membangunkan" network stack lebih awal.
+let lastWarmup = 0;
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    const now = Date.now();
+    if (now - lastWarmup > 5000) { // jangan spam kalau visibility berubah cepat
+      lastWarmup = now;
+      fetch('https://api.exchangerate-api.com/v4/latest/USD', { cache: 'no-store' }).catch(() => {});
+    }
   }
 });
 

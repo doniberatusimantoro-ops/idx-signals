@@ -407,7 +407,17 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
     <span class="section-label">Changelog</span>
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r);overflow:hidden">
       <div style="padding:12px 14px;border-bottom:1px solid var(--border)">
-        <div style="font-family:var(--font-head);font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">v3.2 — Fix "Load failed" bug iOS Safari <span style="font-size:10px;font-weight:400;color:var(--text3);font-family:var(--font-mono)">saat ini</span></div>
+        <div style="font-family:var(--font-head);font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">v3.3 — Fix stuck "Memuat" <span style="font-size:10px;font-weight:400;color:var(--text3);font-family:var(--font-mono)">saat ini</span></div>
+        <div style="font-size:11px;color:var(--text2);line-height:1.7">
+          • Fix bug syntax: fetchYahooData ada brace tidak seimbang yang bikin function rusak<br>
+          • Sederhanakan: hapus retry ganda, 1 endpoint saja (bukan 2), maks 3 proxy (bukan 4)<br>
+          • Timeout per proxy 6 detik, budget waktu total 12 detik per saham<br>
+          • Hard safety timeout 20 detik keseluruhan — UI tidak akan pernah stuck lagi<br>
+          • Progress counter live: "Mengambil harga... (3/12 selesai)"
+        </div>
+      </div>
+      <div style="padding:12px 14px;border-bottom:1px solid var(--border)">
+        <div style="font-family:var(--font-head);font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">v3.2 — Fix "Load failed" bug iOS Safari</div>
         <div style="font-size:11px;color:var(--text2);line-height:1.7">
           • Root cause: bug Safari iOS — fetch gagal jika dijalankan persis saat app kembali visible/aktif<br>
           • Network warm-up ping otomatis saat app dibuka dari home screen/background<br>
@@ -665,11 +675,24 @@ async function refreshHoldingPrices() {
   const tickers = state.holdings.map(h => h.ticker);
   const t0 = Date.now();
   const proxyLogs = [];
-  const onProxyLog = (msg) => proxyLogs.push(msg);
+  const onProxyLog = (msg) => {
+    proxyLogs.push(msg);
+    // Update status live dengan progress counter
+    const done = proxyLogs.filter(m => m.includes('berhasil') || m.includes('SEMUA')).length;
+    if (status) status.textContent = `Mengambil harga... (${done}/${tickers.length} selesai)`;
+  };
 
-  const results = await Promise.allSettled(
-    tickers.map(t => fetchYahooData(t, onProxyLog))
-  );
+  // Hard safety timeout — jangan pernah biarkan UI stuck lebih dari 20 detik
+  const results = await Promise.race([
+    Promise.allSettled(tickers.map(t => fetchYahooData(t, onProxyLog))),
+    new Promise(resolve => setTimeout(() => resolve('TIMEOUT'), 20000))
+  ]);
+
+  if (results === 'TIMEOUT') {
+    if (status) status.innerHTML = `⚠️ Timeout — koneksi terlalu lambat. Coba lagi atau cek koneksi internet.`;
+    if (btn) { btn.textContent = '↻ Update Harga'; btn.disabled = false; btn.style.opacity = '1'; }
+    return;
+  }
 
   let successCount = 0;
   const failedTickers = [];
@@ -869,93 +892,75 @@ const YAHOO_PROXIES = [
   { name: 'corsproxy.io', fn: url => `https://corsproxy.io/?${encodeURIComponent(url)}` },
 ];
 
-async function fetchYahooRaw(url, proxy, retryOnFail = true) {
+async function fetchYahooRaw(url, proxy) {
   const proxyUrl = proxy.fn(url);
+  const res = await fetch(proxyUrl, {
+    signal: AbortSignal.timeout(6000), // 6s per percobaan — jangan terlalu lama
+    cache: 'no-store'
+  });
+  if (!res.ok) throw new Error(`${proxy.name}: HTTP ${res.status}`);
+  const text = await res.text();
   try {
-    const res = await fetch(proxyUrl, {
-      signal: AbortSignal.timeout(15000), // 15s — koneksi mobile lebih lambat
-      cache: 'no-store' // hindari cache stale di iOS PWA
-    });
-    if (!res.ok) throw new Error(`${proxy.name}: HTTP ${res.status}`);
-    const text = await res.text();
-    try {
-      const json = JSON.parse(text);
-      return json.contents ? json.contents : text;
-    } catch(e) {
-      return text; // raw response
-    }
+    const json = JSON.parse(text);
+    return json.contents ? json.contents : text;
   } catch(e) {
-    // Known iOS Safari bug: fetch gagal dengan "Load failed" jika dijalankan
-    // segera setelah app kembali visible/aktif. Retry sekali setelah jeda singkat.
-    const isTransientError = /load failed|aborted|network/i.test(e.message);
-    if (retryOnFail && isTransientError) {
-      await new Promise(r => setTimeout(r, 1200));
-      return fetchYahooRaw(url, proxy, false); // retry sekali saja, tanpa retry lagi
-    }
-    throw e;
+    return text;
   }
 }
 
 async function fetchYahooData(ticker, onProxyLog) {
   const sym = encodeURIComponent(ticker + '.JK');
-  const endpoints = [
-    `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&range=120d`,
-    `https://query2.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&range=120d`,
-  ];
+  const endpoint = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&range=120d`;
 
   const errors = [];
+  const startTime = Date.now();
+  const MAX_TOTAL_MS = 12000; // budget waktu keseluruhan per saham: 12 detik
 
-  for (const endpoint of endpoints) {
-    for (const proxy of YAHOO_PROXIES) {
-      try {
-        const raw = await fetchYahooRaw(endpoint, proxy);
-        const data = JSON.parse(raw);
-        const result = data?.chart?.result?.[0];
-        if (!result) { errors.push(`${proxy.name}: no result`); continue; }
+  for (const proxy of YAHOO_PROXIES.slice(0, 3)) {
+    if (Date.now() - startTime > MAX_TOTAL_MS) { errors.push('timeout budget habis'); break; }
 
-        const meta    = result.meta;
-        const quote   = result.indicators?.quote?.[0] || {};
-        const closes  = (quote.close  || []).filter(v => v != null);
-        const volumes = (quote.volume || []).filter(v => v != null);
+    try {
+      const raw = await fetchYahooRaw(endpoint, proxy);
+      const data = JSON.parse(raw);
+      const result = data?.chart?.result?.[0];
 
-        const curPrice  = meta.regularMarketPrice || closes[closes.length-1] || 0;
-        const prevClose = meta.previousClose || meta.chartPreviousClose || curPrice;
-        const priceChg  = prevClose
-          ? parseFloat(((curPrice-prevClose)/prevClose*100).toFixed(2)) : 0;
-        const avgVol = volumes.length
-          ? Math.round(volumes.slice(-20).reduce((a,b)=>a+b,0)/Math.min(20,volumes.length)) : 0;
+      if (!result) { errors.push(`${proxy.name}: no result`); continue; }
 
-        // Validate data freshness — reject if older than 2 hari
-        const lastTs = meta.regularMarketTime || 0;
-        const ageHrs = lastTs ? (Date.now()/1000 - lastTs) / 3600 : 0;
-        if (lastTs && ageHrs > 48) {
-          errors.push(`${proxy.name}: data ${Math.round(ageHrs)}jam (terlalu lama)`);
-          continue;
-        }
+      const meta    = result.meta;
+      const quote   = result.indicators?.quote?.[0] || {};
+      const closes  = (quote.close  || []).filter(v => v != null);
+      const volumes = (quote.volume || []).filter(v => v != null);
 
-        if (onProxyLog) onProxyLog(`${ticker}: berhasil via ${proxy.name}`);
+      const curPrice  = meta.regularMarketPrice || closes[closes.length-1] || 0;
+      const prevClose = meta.previousClose || meta.chartPreviousClose || curPrice;
+      const priceChg  = prevClose ? parseFloat(((curPrice-prevClose)/prevClose*100).toFixed(2)) : 0;
+      const avgVol    = volumes.length
+        ? Math.round(volumes.slice(-20).reduce((a,b)=>a+b,0)/Math.min(20,volumes.length)) : 0;
 
-        return {
-          ticker,
-          currentPrice:  Math.round(curPrice),
-          previousClose: Math.round(prevClose),
-          priceChange:   priceChg,
-          volume:        meta.regularMarketVolume || 0,
-          avgVolume:     avgVol,
-          marketTime:    lastTs ? new Date(lastTs*1000).toLocaleString('id-ID',{timeZone:'Asia/Jakarta'}) : null,
-          ageHrs:        Math.round(ageHrs),
-          closes, volumes,
-          dataSource:    proxy.name
-        };
+      const lastTs = meta.regularMarketTime || 0;
+      const ageHrs = lastTs ? (Date.now()/1000 - lastTs) / 3600 : 0;
+      if (lastTs && ageHrs > 48) { errors.push(`${proxy.name}: data ${Math.round(ageHrs)}jam (lama)`); continue; }
 
-      } catch(e) {
-        errors.push(`${proxy.name}: ${e.message}`);
-        continue;
-      }
+      if (onProxyLog) onProxyLog(`${ticker}: berhasil via ${proxy.name}`);
+
+      return {
+        ticker,
+        currentPrice:  Math.round(curPrice),
+        previousClose: Math.round(prevClose),
+        priceChange:   priceChg,
+        volume:        meta.regularMarketVolume || 0,
+        avgVolume:     avgVol,
+        marketTime:    lastTs ? new Date(lastTs*1000).toLocaleString('id-ID',{timeZone:'Asia/Jakarta'}) : null,
+        ageHrs:        Math.round(ageHrs),
+        closes, volumes,
+        dataSource:    proxy.name
+      };
+
+    } catch(e) {
+      errors.push(`${proxy.name}: ${e.message}`);
     }
   }
 
-  // All proxies failed — log details for debugging
   if (onProxyLog) onProxyLog(`${ticker}: SEMUA proxy gagal — ${errors.slice(0,2).join(', ')}`);
   console.warn(`fetchYahooData(${ticker}) all proxies failed:`, errors);
   return null;

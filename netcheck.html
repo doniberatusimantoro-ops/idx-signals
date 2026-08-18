@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Network Diagnostic</title>
+<style>
+  body { font-family: -apple-system, monospace; background: #0a0a0f; color: #f0f0f8; padding: 16px; font-size: 13px; }
+  h2 { color: #7B6EF6; margin-bottom: 12px; font-size: 16px; }
+  p.sub { color: #9090A8; font-size: 12px; margin-bottom: 16px; }
+  button { background: #7B6EF6; color: #fff; border: none; border-radius: 8px; padding: 12px 20px; font-size: 14px; font-weight: 600; cursor: pointer; width: 100%; margin-bottom: 12px; }
+  button:disabled { opacity: 0.5; }
+  .log { background: #12121a; border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; padding: 14px; min-height: 300px; max-height: 70vh; overflow-y: auto; white-space: pre-wrap; line-height: 1.7; font-size: 12px; font-family: 'SF Mono', monospace; }
+  .ok { color: #2ECC8A; }
+  .err { color: #FF5A5A; }
+  .warn { color: #F5A623; }
+  .info { color: #4A9EFF; }
+  .dim { color: #5A5A72; }
+</style>
+</head>
+<body>
+
+<h2>🔍 Network Diagnostic</h2>
+<p class="sub">Test ini akan cek koneksi ke Yahoo Finance, proxy CORS, dan API lain dari jaringan kamu saat ini. Jalankan dan copy hasilnya.</p>
+
+<button onclick="runAll()" id="btn">▶ Jalankan Semua Test</button>
+
+<div class="log" id="log">Tekan tombol untuk mulai...\n</div>
+
+<script>
+const log = document.getElementById('log');
+function write(msg, cls='') {
+  const ts = new Date().toLocaleTimeString('id-ID');
+  log.innerHTML += `<span class="${cls}">[${ts}] ${msg}\n</span>`;
+  log.scrollTop = log.scrollHeight;
+}
+
+async function timedFetch(name, url, opts = {}) {
+  const t0 = Date.now();
+  write(`Testing: ${name}...`, 'info');
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(10000), cache: 'no-store', ...opts });
+    const elapsed = Date.now() - t0;
+    write(`  ✅ OK — HTTP ${res.status} (${elapsed}ms)`, 'ok');
+    return { success: true, elapsed, status: res.status };
+  } catch(e) {
+    const elapsed = Date.now() - t0;
+    write(`  ❌ FAIL — ${e.name}: ${e.message} (${elapsed}ms)`, 'err');
+    return { success: false, elapsed, error: e.message };
+  }
+}
+
+async function runAll() {
+  const btn = document.getElementById('btn');
+  btn.disabled = true;
+  log.innerHTML = '';
+
+  write('═══ INFO PERANGKAT ═══', 'dim');
+  write(`User Agent: ${navigator.userAgent}`, 'dim');
+  write(`Online: ${navigator.onLine}`, 'dim');
+  write(`Connection: ${navigator.connection?.effectiveType || 'tidak diketahui'}`, 'dim');
+  write('');
+
+  write('═══ 1. BASELINE — koneksi internet umum ═══', 'info');
+  await timedFetch('Google 204', 'https://www.google.com/generate_204', { mode: 'no-cors' });
+  await timedFetch('Cloudflare', 'https://1.1.1.1/cdn-cgi/trace', { mode: 'no-cors' });
+  write('');
+
+  write('═══ 2. API PIHAK KETIGA (bukan proxy) ═══', 'info');
+  await timedFetch('ExchangeRate API', 'https://api.exchangerate-api.com/v4/latest/USD');
+  await timedFetch('Groq API (base)', 'https://api.groq.com/openai/v1/models', { headers: { 'Authorization': 'Bearer test' } });
+  write('');
+
+  write('═══ 3. YAHOO FINANCE — akses langsung (tanpa proxy) ═══', 'info');
+  await timedFetch('Yahoo direct (no-cors)', 'https://query1.finance.yahoo.com/v8/finance/chart/BBCA.JK', { mode: 'no-cors' });
+  write('');
+
+  write('═══ 4. PROXY CORS — satu per satu ═══', 'info');
+  const target = 'https://query1.finance.yahoo.com/v8/finance/chart/BBCA.JK';
+  const proxies = [
+    { name: 'codetabs.com',   url: `https://api.codetabs.com/v1/proxy/?quest=${encodeURIComponent(target)}` },
+    { name: 'allorigins.win', url: `https://api.allorigins.win/get?url=${encodeURIComponent(target)}` },
+    { name: 'thingproxy',     url: `https://thingproxy.freeboard.io/fetch/${target}` },
+    { name: 'corsproxy.io',   url: `https://corsproxy.io/?${encodeURIComponent(target)}` },
+    { name: 'r.jina.ai',      url: `https://r.jina.ai/${target}` },
+  ];
+  for (const p of proxies) {
+    const result = await timedFetch(p.name, p.url);
+    if (result.success) {
+      try {
+        const res = await fetch(p.url, { signal: AbortSignal.timeout(10000) });
+        const text = await res.text();
+        write(`  Response size: ${text.length} bytes`, 'dim');
+      } catch(e) {}
+    }
+    await new Promise(r => setTimeout(r, 300));
+  }
+  write('');
+
+  write('═══ SELESAI — silakan copy semua hasil di atas ═══', 'ok');
+  btn.disabled = false;
+}
+</script>
+</body>
+</html>

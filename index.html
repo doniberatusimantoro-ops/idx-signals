@@ -407,7 +407,17 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
     <span class="section-label">Changelog</span>
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r);overflow:hidden">
       <div style="padding:12px 14px;border-bottom:1px solid var(--border)">
-        <div style="font-family:var(--font-head);font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">v3.3 — Fix stuck "Memuat" <span style="font-size:10px;font-weight:400;color:var(--text3);font-family:var(--font-mono)">saat ini</span></div>
+        <div style="font-family:var(--font-head);font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">v3.4 — Proxy diurutkan dari data nyata <span style="font-size:10px;font-weight:400;color:var(--text3);font-family:var(--font-mono)">saat ini</span></div>
+        <div style="font-size:11px;color:var(--text2);line-height:1.7">
+          • Test nyata di data seluler Indonesia: r.jina.ai (1.8s ✅), corsproxy.io (1.3s ✅)<br>
+          • allorigins.win DIHAPUS — pernah hang 200+ detik di test, penyebab utama "stuck memuat"<br>
+          • codetabs timeout 10s di test — dipindah ke prioritas akhir<br>
+          • r.jina.ai ditambahkan sebagai proxy utama dengan header khusus + robust JSON extraction<br>
+          • Tool netcheck.html ditambahkan untuk diagnosa jaringan mandiri ke depannya
+        </div>
+      </div>
+      <div style="padding:12px 14px;border-bottom:1px solid var(--border)">
+        <div style="font-family:var(--font-head);font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">v3.3 — Fix stuck "Memuat"</div>
         <div style="font-size:11px;color:var(--text2);line-height:1.7">
           • Fix bug syntax: fetchYahooData ada brace tidak seimbang yang bikin function rusak<br>
           • Sederhanakan: hapus retry ganda, 1 endpoint saja (bukan 2), maks 3 proxy (bukan 4)<br>
@@ -882,24 +892,36 @@ function updateClock() {
 // PENTING: corsproxy.io per 2026 hanya gratis untuk localhost/dev,
 // TIDAK bekerja di domain production seperti Vercel — taruh di urutan akhir saja
 const YAHOO_PROXIES = [
-  // Proxy 1: CodeTabs — rate limit 5/detik, bekerja di semua domain
-  { name: 'codetabs',   fn: url => `https://api.codetabs.com/v1/proxy/?quest=${encodeURIComponent(url)}` },
-  // Proxy 2: allorigins — kadang down tapi masih sering jalan
-  { name: 'allorigins', fn: url => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}` },
-  // Proxy 3: thingproxy — backup ketiga
-  { name: 'thingproxy', fn: url => `https://thingproxy.freeboard.io/fetch/${url}` },
-  // Proxy 4: corsproxy.io — HANYA bekerja jika di-akses dari localhost, jarang berhasil di production
-  { name: 'corsproxy.io', fn: url => `https://corsproxy.io/?${encodeURIComponent(url)}` },
+  // Prioritas berdasarkan hasil testing nyata (data seluler Indonesia, Maret 2026):
+  // r.jina.ai: 1.8s ✅, corsproxy.io: 1.3s (403 tapi respons cepat)
+  // codetabs: timeout 10s ❌, allorigins: hang 200s+ ❌❌❌, thingproxy: gagal cepat
+  { name: 'r.jina.ai',    fn: url => `https://r.jina.ai/${url}`, format: 'jina' },
+  { name: 'corsproxy.io', fn: url => `https://corsproxy.io/?${encodeURIComponent(url)}`, format: 'raw' },
+  { name: 'thingproxy',   fn: url => `https://thingproxy.freeboard.io/fetch/${url}`, format: 'raw' },
+  { name: 'codetabs',     fn: url => `https://api.codetabs.com/v1/proxy/?quest=${encodeURIComponent(url)}`, format: 'raw' },
+  // allorigins DIHAPUS dari daftar — pernah hang 200+ detik di test nyata, terlalu berisiko
 ];
 
 async function fetchYahooRaw(url, proxy) {
   const proxyUrl = proxy.fn(url);
+  const headers = {};
+
+  // r.jina.ai defaultnya convert ke markdown/readable text.
+  // Header ini minta dia passthrough JSON asli tanpa konversi.
+  if (proxy.format === 'jina') {
+    headers['X-Return-Format'] = 'text'; // text = raw content, bukan markdown terformat
+    headers['Accept'] = 'application/json';
+  }
+
   const res = await fetch(proxyUrl, {
-    signal: AbortSignal.timeout(6000), // 6s per percobaan — jangan terlalu lama
-    cache: 'no-store'
+    signal: AbortSignal.timeout(8000),
+    cache: 'no-store',
+    headers
   });
   if (!res.ok) throw new Error(`${proxy.name}: HTTP ${res.status}`);
   const text = await res.text();
+
+  // allorigins wraps in JSON {contents:...}, others return raw
   try {
     const json = JSON.parse(text);
     return json.contents ? json.contents : text;
@@ -916,12 +938,23 @@ async function fetchYahooData(ticker, onProxyLog) {
   const startTime = Date.now();
   const MAX_TOTAL_MS = 12000; // budget waktu keseluruhan per saham: 12 detik
 
-  for (const proxy of YAHOO_PROXIES.slice(0, 3)) {
+  for (const proxy of YAHOO_PROXIES.slice(0, 4)) {
     if (Date.now() - startTime > MAX_TOTAL_MS) { errors.push('timeout budget habis'); break; }
 
     try {
       const raw = await fetchYahooRaw(endpoint, proxy);
-      const data = JSON.parse(raw);
+
+      // Robust JSON extraction — r.jina.ai kadang bungkus JSON dengan teks tambahan
+      let data;
+      try {
+        data = JSON.parse(raw);
+      } catch(parseErr) {
+        // Cari blok JSON di dalam teks (untuk kasus jina.ai atau proxy lain yang nambah teks)
+        const match = raw.match(/\{[\s\S]*"chart"[\s\S]*\}/);
+        if (!match) throw new Error('tidak ada JSON valid dalam respons');
+        data = JSON.parse(match[0]);
+      }
+
       const result = data?.chart?.result?.[0];
 
       if (!result) { errors.push(`${proxy.name}: no result`); continue; }

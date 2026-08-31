@@ -78,11 +78,9 @@ async function runAll() {
   write('═══ 4. PROXY CORS — satu per satu ═══', 'info');
   const target = 'https://query1.finance.yahoo.com/v8/finance/chart/BBCA.JK';
   const proxies = [
+    { name: 'corsfix.com',    url: `https://proxy.corsfix.com/?${target}` },
     { name: 'codetabs.com',   url: `https://api.codetabs.com/v1/proxy/?quest=${encodeURIComponent(target)}` },
-    { name: 'allorigins.win', url: `https://api.allorigins.win/get?url=${encodeURIComponent(target)}` },
     { name: 'thingproxy',     url: `https://thingproxy.freeboard.io/fetch/${target}` },
-    { name: 'corsproxy.io',   url: `https://corsproxy.io/?${encodeURIComponent(target)}` },
-    { name: 'r.jina.ai',      url: `https://r.jina.ai/${target}` },
   ];
   for (const p of proxies) {
     const result = await timedFetch(p.name, p.url);

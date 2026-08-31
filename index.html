@@ -407,7 +407,17 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
     <span class="section-label">Changelog</span>
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r);overflow:hidden">
       <div style="padding:12px 14px;border-bottom:1px solid var(--border)">
-        <div style="font-family:var(--font-head);font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">v3.4 — Proxy diurutkan dari data nyata <span style="font-size:10px;font-weight:400;color:var(--text3);font-family:var(--font-mono)">saat ini</span></div>
+        <div style="font-family:var(--font-head);font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">v3.5 — Ganti proxy set sepenuhnya <span style="font-size:10px;font-weight:400;color:var(--text3);font-family:var(--font-mono)">saat ini</span></div>
+        <div style="font-size:11px;color:var(--text2);line-height:1.7">
+          • KONFIRMASI: corsproxy.io free tier hanya untuk localhost — SELALU 403 di Vercel/production<br>
+          • r.jina.ai didesain baca artikel/HTML, bukan API JSON — sering gagal ekstrak Yahoo Finance data<br>
+          • Keduanya DIHAPUS total dari daftar proxy<br>
+          • Proxy baru: corsfix.com (unlimited, no API key, bukan localhost-only) sebagai prioritas utama<br>
+          • Fallback: codetabs.com → thingproxy — 3 proxy total, lebih sedikit tapi lebih relevan
+        </div>
+      </div>
+      <div style="padding:12px 14px;border-bottom:1px solid var(--border)">
+        <div style="font-family:var(--font-head);font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">v3.4 — Proxy diurutkan dari data nyata</div>
         <div style="font-size:11px;color:var(--text2);line-height:1.7">
           • Test nyata di data seluler Indonesia: r.jina.ai (1.8s ✅), corsproxy.io (1.3s ✅)<br>
           • allorigins.win DIHAPUS — pernah hang 200+ detik di test, penyebab utama "stuck memuat"<br>
@@ -892,36 +902,26 @@ function updateClock() {
 // PENTING: corsproxy.io per 2026 hanya gratis untuk localhost/dev,
 // TIDAK bekerja di domain production seperti Vercel — taruh di urutan akhir saja
 const YAHOO_PROXIES = [
-  // Prioritas berdasarkan hasil testing nyata (data seluler Indonesia, Maret 2026):
-  // r.jina.ai: 1.8s ✅, corsproxy.io: 1.3s (403 tapi respons cepat)
-  // codetabs: timeout 10s ❌, allorigins: hang 200s+ ❌❌❌, thingproxy: gagal cepat
-  { name: 'r.jina.ai',    fn: url => `https://r.jina.ai/${url}`, format: 'jina' },
-  { name: 'corsproxy.io', fn: url => `https://corsproxy.io/?${encodeURIComponent(url)}`, format: 'raw' },
-  { name: 'thingproxy',   fn: url => `https://thingproxy.freeboard.io/fetch/${url}`, format: 'raw' },
-  { name: 'codetabs',     fn: url => `https://api.codetabs.com/v1/proxy/?quest=${encodeURIComponent(url)}`, format: 'raw' },
-  // allorigins DIHAPUS dari daftar — pernah hang 200+ detik di test nyata, terlalu berisiko
+  // Update setelah riset lebih dalam (Maret 2026):
+  // - corsproxy.io: DIKONFIRMASI hanya gratis untuk localhost, SELALU 403 di production — dihapus
+  // - r.jina.ai: didesain untuk baca artikel/HTML, bukan API JSON murni — sering "no result" — dihapus
+  // - allorigins: pernah hang 200+ detik di test nyata — dihapus
+  // - corsfix.com: unlimited request, tanpa API key, TIDAK dibatasi localhost — kandidat utama baru
+  { name: 'corsfix',    fn: url => `https://proxy.corsfix.com/?${url}`, format: 'raw' },
+  { name: 'codetabs',   fn: url => `https://api.codetabs.com/v1/proxy/?quest=${encodeURIComponent(url)}`, format: 'raw' },
+  { name: 'thingproxy', fn: url => `https://thingproxy.freeboard.io/fetch/${url}`, format: 'raw' },
 ];
 
 async function fetchYahooRaw(url, proxy) {
   const proxyUrl = proxy.fn(url);
-  const headers = {};
-
-  // r.jina.ai defaultnya convert ke markdown/readable text.
-  // Header ini minta dia passthrough JSON asli tanpa konversi.
-  if (proxy.format === 'jina') {
-    headers['X-Return-Format'] = 'text'; // text = raw content, bukan markdown terformat
-    headers['Accept'] = 'application/json';
-  }
-
   const res = await fetch(proxyUrl, {
     signal: AbortSignal.timeout(8000),
-    cache: 'no-store',
-    headers
+    cache: 'no-store'
   });
   if (!res.ok) throw new Error(`${proxy.name}: HTTP ${res.status}`);
   const text = await res.text();
 
-  // allorigins wraps in JSON {contents:...}, others return raw
+  // allorigins-style proxies wrap in JSON {contents:...}, others return raw
   try {
     const json = JSON.parse(text);
     return json.contents ? json.contents : text;
@@ -938,7 +938,7 @@ async function fetchYahooData(ticker, onProxyLog) {
   const startTime = Date.now();
   const MAX_TOTAL_MS = 12000; // budget waktu keseluruhan per saham: 12 detik
 
-  for (const proxy of YAHOO_PROXIES.slice(0, 4)) {
+  for (const proxy of YAHOO_PROXIES) {
     if (Date.now() - startTime > MAX_TOTAL_MS) { errors.push('timeout budget habis'); break; }
 
     try {

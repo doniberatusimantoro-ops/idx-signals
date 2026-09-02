@@ -393,7 +393,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
     </div>
 
     <div class="settings-section">
-      <div class="settings-row"><span class="settings-key">Versi App</span><span class="settings-val">2.0.0 · Compound</span></div>
+      <div class="settings-row"><span class="settings-key">Versi App</span><span class="settings-val">3.6.0 · r.jina.ai</span></div>
       <div class="settings-row" style="cursor:pointer" onclick="clearAllData()">
         <span class="settings-key" style="color:var(--red)">Reset Semua Data</span>
         <span class="settings-val">→</span>
@@ -407,7 +407,16 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
     <span class="section-label">Changelog</span>
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r);overflow:hidden">
       <div style="padding:12px 14px;border-bottom:1px solid var(--border)">
-        <div style="font-family:var(--font-head);font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">v3.5 — Ganti proxy set sepenuhnya <span style="font-size:10px;font-weight:400;color:var(--text3);font-family:var(--font-mono)">saat ini</span></div>
+        <div style="font-family:var(--font-head);font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">v3.6 — r.jina.ai jadi prioritas (bukti nyata) <span style="font-size:10px;font-weight:400;color:var(--text3);font-family:var(--font-mono)">saat ini</span></div>
+        <div style="font-size:11px;color:var(--text2);line-height:1.7">
+          • 2x test terpisah di data seluler Indonesia: r.jina.ai SELALU 200 OK (16-20KB data)<br>
+          • Fix header: X-Return-Format:text (bukan markdown) — supaya dapat JSON asli bukan konversi<br>
+          • r.jina.ai jadi proxy utama, corsfix & codetabs sebagai backup<br>
+          • Keputusan berbasis data pengukuran nyata, bukan asumsi dokumentasi resmi
+        </div>
+      </div>
+      <div style="padding:12px 14px;border-bottom:1px solid var(--border)">
+        <div style="font-family:var(--font-head);font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">v3.5 — Ganti proxy set sepenuhnya</div>
         <div style="font-size:11px;color:var(--text2);line-height:1.7">
           • KONFIRMASI: corsproxy.io free tier hanya untuk localhost — SELALU 403 di Vercel/production<br>
           • r.jina.ai didesain baca artikel/HTML, bukan API JSON — sering gagal ekstrak Yahoo Finance data<br>
@@ -902,21 +911,29 @@ function updateClock() {
 // PENTING: corsproxy.io per 2026 hanya gratis untuk localhost/dev,
 // TIDAK bekerja di domain production seperti Vercel — taruh di urutan akhir saja
 const YAHOO_PROXIES = [
-  // Update setelah riset lebih dalam (Maret 2026):
-  // - corsproxy.io: DIKONFIRMASI hanya gratis untuk localhost, SELALU 403 di production — dihapus
-  // - r.jina.ai: didesain untuk baca artikel/HTML, bukan API JSON murni — sering "no result" — dihapus
-  // - allorigins: pernah hang 200+ detik di test nyata — dihapus
-  // - corsfix.com: unlimited request, tanpa API key, TIDAK dibatasi localhost — kandidat utama baru
-  { name: 'corsfix',    fn: url => `https://proxy.corsfix.com/?${url}`, format: 'raw' },
-  { name: 'codetabs',   fn: url => `https://api.codetabs.com/v1/proxy/?quest=${encodeURIComponent(url)}`, format: 'raw' },
-  { name: 'thingproxy', fn: url => `https://thingproxy.freeboard.io/fetch/${url}`, format: 'raw' },
+  // Prioritas berdasarkan BUKTI NYATA 2x test konsisten di jaringan Indonesia (data seluler):
+  // r.jina.ai: 200 OK, 16-20KB data — SELALU berhasil di 2 test terpisah
+  // corsproxy.io: 403 selalu (dikonfirmasi localhost-only, tidak akan pernah berhasil di Vercel)
+  // codetabs/allorigins/thingproxy: timeout/gagal konsisten di jaringan ini
+  { name: 'r.jina.ai', fn: url => `https://r.jina.ai/${url}`, format: 'jina' },
+  { name: 'corsfix',   fn: url => `https://proxy.corsfix.com/?${url}`, format: 'raw' },
+  { name: 'codetabs',  fn: url => `https://api.codetabs.com/v1/proxy/?quest=${encodeURIComponent(url)}`, format: 'raw' },
 ];
 
 async function fetchYahooRaw(url, proxy) {
   const proxyUrl = proxy.fn(url);
+  const headers = {};
+
+  // r.jina.ai: header ini WAJIB supaya dia return konten mentah (JSON asli),
+  // bukan konversi markdown. Tanpa ini, hasil "no result" untuk JSON API.
+  if (proxy.format === 'jina') {
+    headers['X-Return-Format'] = 'text';
+  }
+
   const res = await fetch(proxyUrl, {
     signal: AbortSignal.timeout(8000),
-    cache: 'no-store'
+    cache: 'no-store',
+    headers
   });
   if (!res.ok) throw new Error(`${proxy.name}: HTTP ${res.status}`);
   const text = await res.text();

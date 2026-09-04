@@ -361,7 +361,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
       </div>
       <div class="settings-row">
         <span class="settings-key">Model</span>
-        <span class="settings-val">llama-3.3-70b</span>
+        <span class="settings-val">gpt-oss-120b</span>
       </div>
       <div class="settings-row">
         <span class="settings-key">Web Search</span>
@@ -393,7 +393,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
     </div>
 
     <div class="settings-section">
-      <div class="settings-row"><span class="settings-key">Versi App</span><span class="settings-val">3.6.0 · r.jina.ai</span></div>
+      <div class="settings-row"><span class="settings-key">Versi App</span><span class="settings-val">3.7.0 · gpt-oss-120b</span></div>
       <div class="settings-row" style="cursor:pointer" onclick="clearAllData()">
         <span class="settings-key" style="color:var(--red)">Reset Semua Data</span>
         <span class="settings-val">→</span>
@@ -407,7 +407,17 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
     <span class="section-label">Changelog</span>
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r);overflow:hidden">
       <div style="padding:12px 14px;border-bottom:1px solid var(--border)">
-        <div style="font-family:var(--font-head);font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">v3.6 — r.jina.ai jadi prioritas (bukti nyata) <span style="font-size:10px;font-weight:400;color:var(--text3);font-family:var(--font-mono)">saat ini</span></div>
+        <div style="font-family:var(--font-head);font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">v3.7 — Fix model decommission + infinite loop <span style="font-size:10px;font-weight:400;color:var(--text3);font-family:var(--font-mono)">saat ini</span></div>
+        <div style="font-size:11px;color:var(--text2);line-height:1.7">
+          • ROOT CAUSE: llama-3.3-70b-versatile resmi didecommission Groq per 16 Agustus 2026<br>
+          • Bug kedua: MODELS.filter/compound/mini semua diset sama → fallback logic infinite loop<br>
+          • Model diganti ke openai/gpt-oss-120b (rekomendasi migrasi resmi Groq)<br>
+          • Fallback chain diperbaiki dengan proteksi anti-loop: gpt-oss-120b → gpt-oss-20b → qwen3.6-27b → stop<br>
+          • Pesan error sekarang jelas kalau semua fallback habis, bukan loop selamanya
+        </div>
+      </div>
+      <div style="padding:12px 14px;border-bottom:1px solid var(--border)">
+        <div style="font-family:var(--font-head);font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">v3.6 — r.jina.ai jadi prioritas (bukti nyata)</div>
         <div style="font-size:11px;color:var(--text2);line-height:1.7">
           • 2x test terpisah di data seluler Indonesia: r.jina.ai SELALU 200 OK (16-20KB data)<br>
           • Fix header: X-Return-Format:text (bukan markdown) — supaya dapat JSON asli bukan konversi<br>
@@ -1220,11 +1230,12 @@ function checkPendingOutcomes() {
 // ═══════════════════════════════════════════════════════
 // GROQ API CALL — with retry on rate limit
 // ═══════════════════════════════════════════════════════
-// Models: llama-3.3-70b for everything (compound removed — causes entity too large)
+// PENTING: llama-3.3-70b-versatile DIDECOMMISSION Groq per 16 Agustus 2026.
+// Diganti ke openai/gpt-oss-120b (rekomendasi resmi Groq untuk migrasi).
 const MODELS = {
-  filter:   'llama-3.3-70b-versatile',
-  compound: 'llama-3.3-70b-versatile',  // kept for compatibility, same model
-  mini:     'llama-3.3-70b-versatile'
+  filter:   'openai/gpt-oss-120b',
+  compound: 'openai/gpt-oss-120b',
+  mini:     'openai/gpt-oss-20b'   // model lebih ringan sebagai fallback kedua
 };
 
 async function callGroq(messages, apiKey, {
@@ -1263,17 +1274,21 @@ async function callGroq(messages, apiKey, {
         continue;
       }
 
-      // Model not found — try fallback chain
+      // Model not found — try fallback chain (dengan proteksi infinite loop)
       if (res.status === 404 || res.status === 400) {
-        const fallback = model === MODELS.compound ? MODELS.mini
-                       : model === MODELS.mini ? MODELS.filter
-                       : null;
-        if (fallback) {
+        // Chain: gpt-oss-120b → gpt-oss-20b → qwen3.6-27b → berhenti (jangan fallback ke model yang sama)
+        const fallbackChain = {
+          'openai/gpt-oss-120b': 'openai/gpt-oss-20b',
+          'openai/gpt-oss-20b':  'qwen/qwen3.6-27b'
+        };
+        const fallback = fallbackChain[model];
+
+        if (fallback && fallback !== model) {
           if (onLog) onLog(`ℹ️ ${model} tidak tersedia, beralih ke ${fallback}...`);
           return callGroq(messages, apiKey, { model: fallback, maxTokens, temperature, retries, timeoutMs, onLog });
         }
         const err = await res.json();
-        throw new Error(err.error?.message || `HTTP ${res.status}`);
+        throw new Error(err.error?.message || `HTTP ${res.status} — model ${model} tidak tersedia dan tidak ada fallback lagi`);
       }
 
       if (!res.ok) {

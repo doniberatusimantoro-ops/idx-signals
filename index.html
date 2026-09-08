@@ -393,7 +393,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
     </div>
 
     <div class="settings-section">
-      <div class="settings-row"><span class="settings-key">Versi App</span><span class="settings-val">3.8.0 · Sequential</span></div>
+      <div class="settings-row"><span class="settings-key">Versi App</span><span class="settings-val">3.9.0 · Low Reasoning</span></div>
       <div class="settings-row" style="cursor:pointer" onclick="clearAllData()">
         <span class="settings-key" style="color:var(--red)">Reset Semua Data</span>
         <span class="settings-val">→</span>
@@ -407,7 +407,19 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
     <span class="section-label">Changelog</span>
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r);overflow:hidden">
       <div style="padding:12px 14px;border-bottom:1px solid var(--border)">
-        <div style="font-family:var(--font-head);font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">v3.8 — Fix undefined variable + rate limit <span style="font-size:10px;font-weight:400;color:var(--text3);font-family:var(--font-mono)">saat ini</span></div>
+        <div style="font-family:var(--font-head);font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">v3.9 — Fix gpt-oss reasoning token habis <span style="font-size:10px;font-weight:400;color:var(--text3);font-family:var(--font-mono)">saat ini</span></div>
+        <div style="font-size:11px;color:var(--text2);line-height:1.7">
+          • ROOT CAUSE: gpt-oss-120b adalah model reasoning — proses "berpikir" internal makan max_tokens<br>
+          • Token habis untuk reasoning SEBELUM sampai ke jawaban JSON → content kosong, semua saham gagal<br>
+          • Tambah reasoning_effort:"low" — reasoning lebih ringkas, hemat token untuk jawaban final<br>
+          • maxTokens dinaikkan 420 → 800 per saham, beri ruang cukup untuk reasoning + JSON<br>
+          • Auto-retry dengan 1.5x token jika masih kehabisan (finish_reason:"length")<br>
+          • Log sekarang tampilkan potongan respons AI saat parsing gagal — lebih mudah didiagnosa<br>
+          • Prompt diperbaiki: hapus placeholder literal (HITUNG_DARI_RESISTANCE) yang bisa ter-copy mentah oleh AI
+        </div>
+      </div>
+      <div style="padding:12px 14px;border-bottom:1px solid var(--border)">
+        <div style="font-family:var(--font-head);font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">v3.8 — Fix undefined variable + rate limit</div>
         <div style="font-size:11px;color:var(--text2);line-height:1.7">
           • Fix "Can't find variable: candidates" — sisa kode dari sistem lama sebelum migrasi ke batch scoring<br>
           • Ganti eksekusi 5 saham dari PARALEL penuh → SEQUENTIAL dengan jeda 1.2 detik antar saham<br>
@@ -1262,11 +1274,18 @@ async function callGroq(messages, apiKey, {
 
       let res;
       try {
+        const body = { model, messages, temperature, max_tokens: maxTokens };
+        // gpt-oss models: reasoning enabled by default, bisa habiskan max_tokens
+        // untuk "berpikir" sebelum sampai ke jawaban JSON final.
+        // reasoning_effort:low mempercepat + hemat token untuk reasoning internal.
+        if (model.includes('gpt-oss')) {
+          body.reasoning_effort = 'low';
+        }
         res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
           method: 'POST',
           signal: controller.signal,
           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-          body: JSON.stringify({ model, messages, temperature, max_tokens: maxTokens })
+          body: JSON.stringify(body)
         });
       } finally {
         clearTimeout(timer);
@@ -1307,8 +1326,20 @@ async function callGroq(messages, apiKey, {
 
       const data = await res.json();
       const content = data.choices?.[0]?.message?.content || '';
+      const finishReason = data.choices?.[0]?.finish_reason;
       const tokens = data.usage?.total_tokens || 0;
       if (onLog && tokens) onLog(`📊 Token digunakan: ${tokens}`);
+
+      // gpt-oss model: kalau max_tokens habis untuk reasoning sebelum sampai jawaban,
+      // content bisa kosong dengan finish_reason:"length". Retry dengan token lebih besar.
+      if (!content && finishReason === 'length') {
+        if (onLog) onLog(`⚠️ Token habis untuk reasoning sebelum jawaban selesai (percobaan ${attempt}/${retries})`);
+        if (attempt < retries) {
+          return callGroq(messages, apiKey, {
+            model, maxTokens: Math.round(maxTokens * 1.5), temperature, retries: retries - attempt, timeoutMs, onLog
+          });
+        }
+      }
       return content;
 
     } catch(e) {
@@ -1598,17 +1629,18 @@ ATURAN WAJIB UNTUK TP/SL (akan ditolak jika dilanggar):
 - Untuk signal BUY: TP HARUS lebih tinggi dari harga sekarang, SL HARUS lebih rendah
 - Untuk signal SELL: TP HARUS lebih rendah dari harga sekarang, SL HARUS lebih tinggi
 - Untuk signal HOLD: TP = target jika lanjut naik, SL = level cut-loss jika turun
-- TP/SL harus dihitung dari support/resistance DATA LIVE di atas, BUKAN persentase sembarangan dari harga
-- targetDays short-term: 3-10 hari. targetDays medium-term: 15-30 hari
-- R/R ratio akan dihitung ulang oleh sistem — isi angka TP dan SL yang masuk akal, biarkan sistem hitung rasionya
+- TP/SL harus berupa ANGKA NUMERIK (bukan teks/rumus), dihitung dari support/resistance di atas
+- targetDays short-term: angka 3-10. targetDays medium-term: angka 15-30
 
-Balas JSON SATU BARIS tanpa markdown, GANTI SEMUA ANGKA sesuai analisis Anda (jangan pakai angka template):
-{"ticker":"${ticker}","companyName":"nama resmi PT","signal":"buy|hold|sell","currentPrice":${refPrice},"priceChange":${yahooData?.priceChange||0.0},"confidence":"high|medium|low","styleTag":"Value|Growth|Swing","signals":["sebutkan sinyal nyata yang dipakai, mis. RSI_oversold atau Support_kuat"],"shortTerm":{"tp":HITUNG_DARI_RESISTANCE,"sl":HITUNG_DARI_SUPPORT,"targetDays":ANGKA_3_SAMPAI_10},"mediumTerm":{"tp":HITUNG_TARGET_LEBIH_JAUH,"sl":HITUNG_SL_LEBIH_LEBAR,"targetDays":ANGKA_15_SAMPAI_30},"reasoning":"2 kalimat konkret menyebutkan angka spesifik dari data di atas","alert":null,"isInPortfolio":${holding?'true':'false'}}`;
+Contoh format (angka di bawah HANYA contoh, WAJIB diganti dengan hasil analisismu sendiri):
+{"ticker":"${ticker}","companyName":"nama resmi PT","signal":"buy","currentPrice":${refPrice},"priceChange":${yahooData?.priceChange||0.0},"confidence":"medium","styleTag":"Value","signals":["RSI_oversold"],"shortTerm":{"tp":${Math.round(refPrice*1.05)},"sl":${Math.round(refPrice*0.96)},"targetDays":7},"mediumTerm":{"tp":${Math.round(refPrice*1.10)},"sl":${Math.round(refPrice*0.94)},"targetDays":20},"reasoning":"2 kalimat konkret menyebutkan angka spesifik dari data di atas","alert":null,"isInPortfolio":${holding?'true':'false'}}
+
+Balas HANYA JSON satu baris tanpa markdown, tanpa penjelasan tambahan.`;
 
       const ar = await callGroq(
         [{ role: 'user', content: ap }],
         apiKey,
-        { model: MODELS.filter, maxTokens: 420, temperature: attempt===0 ? 0.3 : 0.5, retries: 2, timeoutMs: 25000, onLog }
+        { model: MODELS.filter, maxTokens: 800, temperature: attempt===0 ? 0.3 : 0.5, retries: 2, timeoutMs: 25000, onLog }
       );
 
       // Robust JSON extraction — handles nested objects
@@ -1621,7 +1653,10 @@ Balas JSON SATU BARIS tanpa markdown, GANTI SEMUA ANGKA sesuai analisis Anda (ja
           else if (ar[i]==='}') { d--; if (d===0) { jsonStr=ar.slice(firstBrace,i+1); break; } }
         }
       }
-      if (!jsonStr) return null;
+      if (!jsonStr) {
+        if (onLog) onLog(`⚠️ ${ticker}: tidak ada JSON dalam respons — "${ar.slice(0,80).replace(/\n/g,' ')}..."`);
+        return null;
+      }
 
       try {
         const parsed = JSON.parse(jsonStr);
@@ -1638,7 +1673,10 @@ Balas JSON SATU BARIS tanpa markdown, GANTI SEMUA ANGKA sesuai analisis Anda (ja
             .replace(/(['"'])?([a-zA-Z_]\w*)(['"'])?\s*:/g,'"$2":')
             .replace(/:\s*'([^']*)'/g,':"$1"');
           return validateRec(JSON.parse(fixed), ticker);
-        } catch(e2) { return null; }
+        } catch(e2) {
+          if (onLog) onLog(`⚠️ ${ticker}: JSON parse gagal — "${jsonStr.slice(0,100).replace(/\n/g,' ')}..."`);
+          return null;
+        }
       }
     }
 

@@ -393,7 +393,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
     </div>
 
     <div class="settings-section">
-      <div class="settings-row"><span class="settings-key">Versi App</span><span class="settings-val">3.9.0 · Low Reasoning</span></div>
+      <div class="settings-row"><span class="settings-key">Versi App</span><span class="settings-val">4.0.0 · Diverse & Transparent</span></div>
       <div class="settings-row" style="cursor:pointer" onclick="clearAllData()">
         <span class="settings-key" style="color:var(--red)">Reset Semua Data</span>
         <span class="settings-val">→</span>
@@ -407,7 +407,19 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
     <span class="section-label">Changelog</span>
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r);overflow:hidden">
       <div style="padding:12px 14px;border-bottom:1px solid var(--border)">
-        <div style="font-family:var(--font-head);font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">v3.9 — Fix gpt-oss reasoning token habis <span style="font-size:10px;font-weight:400;color:var(--text3);font-family:var(--font-mono)">saat ini</span></div>
+        <div style="font-family:var(--font-head);font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">v4.0 — Variasi kandidat + transparansi analisis <span style="font-size:10px;font-weight:400;color:var(--text3);font-family:var(--font-mono)">saat ini</span></div>
+        <div style="font-size:11px;color:var(--text2);line-height:1.7">
+          • Bonus skor portofolio dikurangi 40→15 — tidak lagi otomatis dominasi ranking<br>
+          • Batch 1 dibatasi maks 3 dari 5 slot boleh dari portofolio — sisa 2 slot wajib kandidat baru<br>
+          • Watchlist diperluas 20→35 saham, lebih banyak sektor (Retail, Energy, Health, dst)<br>
+          • Bonus eksplorasi +15 untuk saham baru yang belum pernah dianalisis<br>
+          • Randomisasi kecil (±5) di scoring — variasi hari ke hari, tidak selalu urutan sama<br>
+          • Kartu rekomendasi sekarang tampilkan breakdown sinyal + akurasi historisnya<br>
+          • Track Record: sample count (n=) per sinyal + peringatan kalau sample masih kecil
+        </div>
+      </div>
+      <div style="padding:12px 14px;border-bottom:1px solid var(--border)">
+        <div style="font-family:var(--font-head);font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">v3.9 — Fix gpt-oss reasoning token habis</div>
         <div style="font-size:11px;color:var(--text2);line-height:1.7">
           • ROOT CAUSE: gpt-oss-120b adalah model reasoning — proses "berpikir" internal makan max_tokens<br>
           • Token habis untuk reasoning SEBELUM sampai ke jawaban JSON → content kosong, semua saham gagal<br>
@@ -1216,13 +1228,17 @@ function getWeightedPerf() {
     const w = age<=30 ? 1 : age<=60 ? 0.5 : 0.25;
     tw += w; if (r.outcome==='win') ww += w;
     (r.signals||[]).forEach(sig => {
-      if (!sigS[sig]) sigS[sig]={t:0,w:0};
+      if (!sigS[sig]) sigS[sig]={t:0,w:0,count:0};
       sigS[sig].t += w; if (r.outcome==='win') sigS[sig].w += w;
+      sigS[sig].count++; // raw sample count, bukan weighted
     });
   });
-  const acc={};
-  Object.entries(sigS).forEach(([k,v]) => { acc[k] = v.t>0 ? Math.round(v.w/v.t*100) : 50; });
-  return { winRate: tw>0?Math.round(ww/tw*100):null, total: done.length, signalAccuracy: acc };
+  const acc={}, sampleCount={};
+  Object.entries(sigS).forEach(([k,v]) => {
+    acc[k] = v.t>0 ? Math.round(v.w/v.t*100) : 50;
+    sampleCount[k] = v.count;
+  });
+  return { winRate: tw>0?Math.round(ww/tw*100):null, total: done.length, signalAccuracy: acc, sampleCount };
 }
 
 function buildPerfContext() {
@@ -1361,21 +1377,33 @@ async function callGroq(messages, apiKey, {
 // ═══════════════════════════════════════════════════════
 // ── SEKTOR per saham untuk diversifikasi scoring ──
 const IDX_WATCHLIST = [
-  'BBCA','BBRI','BMRI','BNGA','BBNI',
-  'TLKM','GOTO','EXCL',
-  'ASII','UNVR','ICBP','INDF',
-  'ADRO','PTBA','INCO','ANTM',
-  'KLBF','SMGR','CTRA','JSMR'
+  'BBCA','BBRI','BMRI','BNGA','BBNI','BRIS',
+  'TLKM','GOTO','EXCL','ISAT',
+  'ASII','UNVR','ICBP','INDF','MYOR','AMRT',
+  'ADRO','PTBA','INCO','ANTM','MDKA','TINS',
+  'KLBF','SIDO','HEAL',
+  'SMGR','INTP',
+  'CTRA','BSDE','PWON',
+  'JSMR','TOWR',
+  'MEDC','PGAS',
+  'ACES','ERAA'
 ];
 
 const STOCK_META = {
   BBCA:{sector:'Banking'},   BBRI:{sector:'Banking'},   BMRI:{sector:'Banking'},
-  BNGA:{sector:'Banking'},   BBNI:{sector:'Banking'},
+  BNGA:{sector:'Banking'},   BBNI:{sector:'Banking'},   BRIS:{sector:'Banking'},
   TLKM:{sector:'Telco'},     GOTO:{sector:'Tech'},       EXCL:{sector:'Telco'},
+  ISAT:{sector:'Telco'},
   ASII:{sector:'Auto'},      UNVR:{sector:'Consumer'},   ICBP:{sector:'Consumer'},
-  INDF:{sector:'Consumer'},  ADRO:{sector:'Mining'},     PTBA:{sector:'Mining'},
-  INCO:{sector:'Mining'},    ANTM:{sector:'Mining'},     KLBF:{sector:'Health'},
-  SMGR:{sector:'Cement'},    CTRA:{sector:'Property'},   JSMR:{sector:'Infra'}
+  INDF:{sector:'Consumer'},  MYOR:{sector:'Consumer'},   AMRT:{sector:'Retail'},
+  ADRO:{sector:'Mining'},    PTBA:{sector:'Mining'},     INCO:{sector:'Mining'},
+  ANTM:{sector:'Mining'},    MDKA:{sector:'Mining'},     TINS:{sector:'Mining'},
+  KLBF:{sector:'Health'},    SIDO:{sector:'Health'},     HEAL:{sector:'Health'},
+  SMGR:{sector:'Cement'},    INTP:{sector:'Cement'},
+  CTRA:{sector:'Property'},  BSDE:{sector:'Property'},   PWON:{sector:'Property'},
+  JSMR:{sector:'Infra'},     TOWR:{sector:'Infra'},
+  MEDC:{sector:'Energy'},    PGAS:{sector:'Energy'},
+  ACES:{sector:'Retail'},    ERAA:{sector:'Retail'}
 };
 
 // ── SCORING FUNCTION: Opsi A + B ──────────────────────
@@ -1406,17 +1434,20 @@ function scoreAndSelectCandidates(holdingTickers) {
   const scored = universe.map(ticker => {
     let score = 0;
     const st = stockStats[ticker] || { wins: 0, total: 0, lastAnalyzed: 0 };
+    const isHolding = holdingTickers.includes(ticker);
 
-    // A1: Saham di portofolio user → prioritas tertinggi (+40)
-    if (holdingTickers.includes(ticker)) score += 40;
+    // A1: Saham di portofolio user → bonus moderat, BUKAN dominan (+15, sebelumnya +40)
+    // Supaya portofolio tetap dipertimbangkan tapi tidak otomatis menang dari kandidat baru
+    if (isHolding) score += 15;
 
     // A2: Belum dianalisis dalam 3 hari → fresh candidate (+25)
     const daysSinceLast = st.lastAnalyzed ? (now - st.lastAnalyzed) / DAY : 999;
     if (daysSinceLast > 3) score += 25;
     else if (daysSinceLast > 1) score += 10;
 
-    // A3: Rotasi sektor — spread agar tidak semua banking/mining
-    // (ini diterapkan saat split batch, bukan di score individual)
+    // A3: Bonus eksplorasi — saham NON-portofolio yang belum pernah dicoba dapat dorongan
+    // supaya variasi rekomendasi tidak melulu itu-itu saja
+    if (!isHolding && st.total === 0) score += 15;
 
     // B1: Win rate historis di track record (+0 to +30)
     if (st.total >= 2) {
@@ -1432,27 +1463,35 @@ function scoreAndSelectCandidates(holdingTickers) {
     // B3: Kecilkan score jika baru dianalisis kemarin (hindari ulang terlalu cepat)
     if (daysSinceLast < 1) score -= 20;
 
+    // Tambahkan sedikit randomisasi (±5) supaya urutan tidak selalu identik
+    // saat skor-skor berdekatan — mendorong variasi hari ke hari
+    score += (Math.random() * 10 - 5);
+
     return { ticker, score, sector: (STOCK_META[ticker] || {}).sector || 'Other',
              winRate: st.total > 0 ? st.wins/st.total : null,
-             lastAnalyzed: st.lastAnalyzed, isHolding: holdingTickers.includes(ticker) };
+             lastAnalyzed: st.lastAnalyzed, isHolding };
   });
 
   // Sort by score descending
   scored.sort((a, b) => b.score - a.score);
 
-  // Split menjadi 3 batch dengan diversifikasi sektor
-  // Batch 1: top 5, pastikan maks 2 saham dari sektor yang sama
+  // Split menjadi 3 batch dengan diversifikasi sektor DAN batasi dominasi holdings
+  // Batch 1: top 5, maks 2/sektor, DAN maks 3 dari portofolio (sisakan ruang untuk kandidat baru)
   const batch1 = [], batch2 = [], batch3 = [];
   const sectorCount = {};
+  let holdingCountInB1 = 0;
+  const MAX_HOLDINGS_IN_B1 = 3; // dari 5 slot batch1, maksimal 3 boleh dari portofolio
 
   for (const s of scored) {
-    const inB1Already = batch1.length;
     const sec = s.sector;
     sectorCount[sec] = sectorCount[sec] || 0;
 
-    if (batch1.length < 5 && sectorCount[sec] < 2) {
+    const wouldExceedHoldingCap = s.isHolding && holdingCountInB1 >= MAX_HOLDINGS_IN_B1;
+
+    if (batch1.length < 5 && sectorCount[sec] < 2 && !wouldExceedHoldingCap) {
       batch1.push(s.ticker);
       sectorCount[sec]++;
+      if (s.isHolding) holdingCountInB1++;
     } else if (batch2.length < 5) {
       batch2.push(s.ticker);
     } else if (batch3.length < 5) {
@@ -2023,6 +2062,16 @@ function renderRecommendations(result) {
 
     const alertHtml = r.alert ? `<div class="alert-strip">⚠️ ${r.alert}</div>` : '';
 
+    // ── Signal breakdown — tampilkan sinyal yang dipakai + akurasi historis ──
+    const perf = getWeightedPerf();
+    const signalBreakdown = (r.signals || []).map(sig => {
+      const acc = perf.signalAccuracy[sig];
+      const accLabel = acc !== undefined
+        ? `<span style="color:${acc>=65?'var(--green)':acc>=45?'var(--amber)':'var(--red)'}">${acc}%</span>`
+        : `<span style="color:var(--text3)">baru</span>`;
+      return `<span class="tech-pill" style="display:inline-flex;align-items:center;gap:4px">${sig} ${accLabel}</span>`;
+    }).join('');
+
     html += `<div class="stock-card" style="animation-delay:${i*.08}s">
       <div class="card-body">
         <div class="card-row1">
@@ -2055,6 +2104,10 @@ function renderRecommendations(result) {
           <span class="conf-text">${cl}</span>
           <span class="style-tag">${r.styleTag||'Mixed'}</span>
         </div>
+        ${signalBreakdown ? `<div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:4px">
+          <span style="font-size:9px;color:var(--text3);font-family:var(--font-head);font-weight:600;letter-spacing:.05em;align-self:center">SINYAL:</span>
+          ${signalBreakdown}
+        </div>` : ''}
       </div>
       <div class="reasoning">
         <div class="reasoning-label">🧠 Analisis AI (berdasarkan data terkini)</div>
@@ -2310,12 +2363,19 @@ function renderTrackRecord() {
   const entries=Object.entries(p.signalAccuracy).sort((a,b)=>b[1]-a[1]);
   if (entries.length>0) {
     const gc=v=>v>=70?'#2ECC8A':v>=55?'#F5A623':'#FF5A5A';
-    document.getElementById('signal-bars').innerHTML=entries.map(([k,v])=>`
-      <div class="sig-row">
-        <span class="sig-name">${k}</span>
-        <div class="sig-bar-track"><div class="sig-bar-fill" style="width:${v}%;background:${gc(v)}"></div></div>
-        <span class="sig-pct" style="color:${gc(v)}">${v}%</span>
-      </div>`).join('');
+    document.getElementById('signal-bars').innerHTML = `
+      <div style="font-size:10px;color:var(--text3);margin-bottom:10px;line-height:1.5">
+        Angka % di bawah HANYA bermakna kalau sample cukup banyak. Sample &lt;5 masih sangat kasar — jangan terlalu percaya diri dulu.
+      </div>` +
+      entries.map(([k,v])=>{
+        const n = p.sampleCount[k] || 0;
+        const reliability = n >= 10 ? '' : n >= 5 ? ' ⚠' : ' ⚠⚠';
+        return `<div class="sig-row">
+          <span class="sig-name">${k}</span>
+          <div class="sig-bar-track"><div class="sig-bar-fill" style="width:${v}%;background:${gc(v)}"></div></div>
+          <span class="sig-pct" style="color:${gc(v)}">${v}%<span style="color:var(--text3);font-size:9px"> (n=${n})${reliability}</span></span>
+        </div>`;
+      }).join('');
   }
   if (state.lastAnalysis?.selfNote) document.getElementById('ai-self-note').textContent=state.lastAnalysis.selfNote;
 }

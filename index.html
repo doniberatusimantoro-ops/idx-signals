@@ -393,7 +393,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
     </div>
 
     <div class="settings-section">
-      <div class="settings-row"><span class="settings-key">Versi App</span><span class="settings-val">4.0.0 · Diverse & Transparent</span></div>
+      <div class="settings-row"><span class="settings-key">Versi App</span><span class="settings-val">4.1.0 · Signal Metrics</span></div>
       <div class="settings-row" style="cursor:pointer" onclick="clearAllData()">
         <span class="settings-key" style="color:var(--red)">Reset Semua Data</span>
         <span class="settings-val">→</span>
@@ -407,7 +407,17 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);min-hei
     <span class="section-label">Changelog</span>
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r);overflow:hidden">
       <div style="padding:12px 14px;border-bottom:1px solid var(--border)">
-        <div style="font-family:var(--font-head);font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">v4.0 — Variasi kandidat + transparansi analisis <span style="font-size:10px;font-weight:400;color:var(--text3);font-family:var(--font-mono)">saat ini</span></div>
+        <div style="font-family:var(--font-head);font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">v4.1 — Indikator objektif kekuatan sinyal <span style="font-size:10px;font-weight:400;color:var(--text3);font-family:var(--font-mono)">saat ini</span></div>
+        <div style="font-size:11px;color:var(--text2);line-height:1.7">
+          • PENJELASAN: confidence 4-dot (HIGH) memang jarang by design — butuh 2+ sinyal kuat sejalan<br>
+          • Yang muncul selama ini SEMUA sudah lolos threshold medium/high — tidak ada bug, HIGH memang ketat<br>
+          • Ditambahkan 2 indikator baru yang independen dari label AI: Jumlah Sinyal & R/R Ratio<br>
+          • Warna hijau/kuning/merah pada kedua indikator — kamu bisa nilai kekuatan sinyal sendiri<br>
+          • Jumlah Sinyal ≥3 dan R/R ≥3 adalah sinyal kuat, meski labelnya cuma MEDIUM
+        </div>
+      </div>
+      <div style="padding:12px 14px;border-bottom:1px solid var(--border)">
+        <div style="font-family:var(--font-head);font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">v4.0 — Variasi kandidat + transparansi analisis</div>
         <div style="font-size:11px;color:var(--text2);line-height:1.7">
           • Bonus skor portofolio dikurangi 40→15 — tidak lagi otomatis dominasi ranking<br>
           • Batch 1 dibatasi maks 3 dari 5 slot boleh dari portofolio — sisa 2 slot wajib kandidat baru<br>
@@ -2104,7 +2114,25 @@ function renderRecommendations(result) {
           <span class="conf-text">${cl}</span>
           <span class="style-tag">${r.styleTag||'Mixed'}</span>
         </div>
-        ${signalBreakdown ? `<div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:4px">
+        ${(() => {
+          // Indikator objektif tambahan — tidak bergantung pada label confidence AI,
+          // supaya kamu bisa nilai sendiri kekuatan sinyal dari angka konkret.
+          const sigCount = (r.signals || []).length;
+          const rrShort = parseFloat((r.shortTerm?.rr || '1:0').split(':')[1]) || 0;
+          const rrColor = rrShort >= 3 ? 'var(--green)' : rrShort >= 2 ? 'var(--amber)' : 'var(--red)';
+          const sigColor = sigCount >= 3 ? 'var(--green)' : sigCount >= 2 ? 'var(--amber)' : 'var(--red)';
+          return `<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px">
+            <div style="background:var(--bg3);border-radius:6px;padding:6px 8px;text-align:center">
+              <div style="font-size:9px;color:var(--text3);font-family:var(--font-head);font-weight:600;letter-spacing:.04em">JUMLAH SINYAL</div>
+              <div style="font-family:var(--font-mono);font-size:15px;font-weight:600;color:${sigColor}">${sigCount}</div>
+            </div>
+            <div style="background:var(--bg3);border-radius:6px;padding:6px 8px;text-align:center">
+              <div style="font-size:9px;color:var(--text3);font-family:var(--font-head);font-weight:600;letter-spacing:.04em">R/R RATIO (ST)</div>
+              <div style="font-family:var(--font-mono);font-size:15px;font-weight:600;color:${rrColor}">${r.shortTerm?.rr || '—'}</div>
+            </div>
+          </div>`;
+        })()}
+        ${signalBreakdown ? `<div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:8px">
           <span style="font-size:9px;color:var(--text3);font-family:var(--font-head);font-weight:600;letter-spacing:.05em;align-self:center">SINYAL:</span>
           ${signalBreakdown}
         </div>` : ''}
